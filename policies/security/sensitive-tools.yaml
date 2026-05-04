@@ -1,0 +1,30 @@
+version: 1
+
+# block the most common destructive or exfiltration-prone tools.
+# agents that legitimately need these should override this policy
+# in their own aegis.config.yaml with an explicit ALLOW rule above it.
+
+policies:
+  - name: block_shell_exec
+    trigger:
+      tool: [shell, bash, cmd, code_exec, eval]
+    decision: DENY
+    reason: "shell execution is blocked by default"
+
+  - name: block_destructive_fs
+    trigger:
+      tool: [delete_file, remove_dir, rm, unlink]
+    decision: DENY
+    reason: "destructive filesystem operations require explicit approval"
+
+  - name: block_write_sql
+    trigger:
+      tool: [execute_sql_write, db_write, sql_insert, sql_update, sql_delete]
+    decision: DENY
+    reason: "write sql requires explicit approval"
+
+  - name: block_outbound_comms
+    trigger:
+      tool: [send_email, send_sms, send_slack, post_webhook]
+    decision: DENY
+    reason: "outbound communications are blocked by default"

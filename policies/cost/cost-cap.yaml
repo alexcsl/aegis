@@ -1,0 +1,18 @@
+version: 1
+
+# cost cap policies. set cost_usd on each intercept call for these to work.
+
+policies:
+  - name: cost_cap_5usd
+    trigger:
+      session_cost_usd:
+        gt: 5.00
+    decision: DENY
+    reason: "session cost cap of $5 reached"
+
+  - name: cost_cap_20usd
+    trigger:
+      session_cost_usd:
+        gt: 20.00
+    decision: DENY
+    reason: "session cost cap of $20 reached"

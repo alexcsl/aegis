@@ -1,0 +1,38 @@
+version: 1
+
+policies:
+  # block known destructive tools by default
+  - name: sensitive_tool_block
+    trigger:
+      tool:
+        - delete_file
+        - execute_sql_write
+        - send_email
+        - shell
+        - code_exec
+    decision: DENY
+    reason: "tool requires explicit allowlist entry"
+
+  # deny if the agent fires more than 20 calls in a minute
+  - name: rate_limit
+    trigger:
+      tool_calls_per_minute:
+        gt: 20
+    decision: DENY
+    reason: "rate limit exceeded"
+
+  # deny if accumulated session cost crosses $5
+  - name: cost_cap
+    trigger:
+      session_cost_usd:
+        gt: 5.00
+    decision: DENY
+    reason: "session cost cap reached"
+
+  # deny on high risk score - likely manipulation or drift
+  - name: high_risk
+    trigger:
+      risk_score:
+        gt: 0.85
+    decision: DENY
+    reason: "risk score too high"

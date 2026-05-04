@@ -1,0 +1,31 @@
+# go
+core/aegis
+core/aegis-proxy
+core/*.test
+
+# node
+node_modules/
+sdk/typescript/dist/
+sdk/typescript/*.tsbuildinfo
+
+# env
+.env
+.env.*
+!.env.example
+
+# editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# os
+.DS_Store
+Thumbs.db
+
+# docker
+*.tar
+
+# markdowns
+aegis-business-plan-prd.md
+CLAUDE.md
