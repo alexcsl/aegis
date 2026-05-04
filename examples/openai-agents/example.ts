@@ -5,7 +5,7 @@
  *   AEGIS_API_KEY=your-key OPENAI_API_KEY=your-key npx tsx example.ts
  */
 
-import { Aegis, type AegisTool } from '@aegis-ai/sdk'
+import { Aegis, type AegisTool } from '@aegis-ai-observable/sdk'
 
 // define tools in the aegis format
 const searchWeb: AegisTool = {

@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: aegis
       POSTGRES_USER: aegis
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,8 +23,8 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://aegis:${POSTGRES_PASSWORD:-changeme}@postgres:5432/aegis?sslmode=disable
-      AEGIS_API_KEY: ${AEGIS_API_KEY}
+      DATABASE_URL: postgres://aegis:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/aegis?sslmode=disable
+      AEGIS_API_KEY: ${AEGIS_API_KEY:?AEGIS_API_KEY is required}
       AEGIS_ADDR: ":8080"
     ports:
       - "8080:8080"

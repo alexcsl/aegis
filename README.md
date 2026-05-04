@@ -73,13 +73,13 @@ docker compose up -d
 **2. install the sdk**
 
 ```bash
-npm install @aegis-ai/sdk
+npm install @aegis-ai-observable/sdk
 ```
 
 **3. wrap your tools**
 
 ```typescript
-import { Aegis, DeniedError } from '@aegis-ai/sdk'
+import { Aegis, DeniedError } from '@aegis-ai-observable/sdk'
 
 const aegis = new Aegis({ agentId: 'my-agent' })
 
@@ -226,7 +226,7 @@ the go binary is a single static file (~8MB). the docker image is built on scrat
 - [x] session context store in postgres
 - [x] rule-based risk scoring
 - [x] yaml policy engine
-- [x] typescript sdk (`@aegis-ai/sdk`)
+- [x] typescript sdk (`@aegis-ai-observable/sdk`)
 - [x] mcp transparent proxy mode
 - [x] docker compose setup
 
