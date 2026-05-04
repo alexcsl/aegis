@@ -1,5 +1,5 @@
 {
-  "name": "@aegis-ai/sdk",
+  "name": "@aegis-ai-observable/sdk",
   "version": "0.1.0",
   "description": "behavioral authorization sdk for ai agents",
   "type": "module",
