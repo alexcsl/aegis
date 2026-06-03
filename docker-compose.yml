@@ -30,7 +30,7 @@ services:
       - "8080:8080"
     volumes:
       - ./aegis.config.yaml:/aegis.config.yaml:ro
-    command: ["serve", "--config", "/aegis.config.yaml"]
+    command: ["serve", "--config", "/aegis.config.yaml", "--behind-proxy"]
 
 volumes:
   pgdata:

@@ -39,6 +39,11 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
+// Ping verifies the database connection is still alive.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 // Migrate runs the schema migrations. Safe to call on every startup.
 func (s *Store) Migrate(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx, ddl)

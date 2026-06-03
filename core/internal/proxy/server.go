@@ -19,7 +19,7 @@ type Server struct {
 }
 
 // NewServer creates a Server but does not start listening.
-func NewServer(addr, apiKey string, cfg *policy.Config, db *store.Store) *Server {
+func NewServer(addr, apiKey string, cfg *policy.Config, db *store.Store, behindProxy bool) *Server {
 	s := &Server{
 		addr:      addr,
 		store:     db,
@@ -27,12 +27,16 @@ func NewServer(addr, apiKey string, cfg *policy.Config, db *store.Store) *Server
 	}
 
 	mux := http.NewServeMux()
-	auth := authMiddleware(apiKey)
+	auth := authMiddleware(apiKey, behindProxy)
 
 	mux.Handle("POST /v1/intercept",      auth(http.HandlerFunc(s.handleIntercept)))
 	mux.Handle("GET /v1/session/{id}",    auth(http.HandlerFunc(s.handleGetSession)))
 	mux.Handle("GET /v1/traces",          auth(http.HandlerFunc(s.handleGetTraces)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.store.Ping(r.Context()); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "error": "database unavailable"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 

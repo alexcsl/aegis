@@ -1,5 +1,28 @@
 # changelog
 
+## v0.1.2 (2026-06-03)
+
+### security
+
+- **Session injection fix:** `POST /v1/intercept` now rejects requests where the supplied `agent_id` does not match the owner of the existing session. Previously any agent could append tool calls to another agent's session (IDOR / cross-agent session poisoning).
+- **X-Forwarded-For gate:** `X-Forwarded-For` is now only trusted for IP extraction when `--behind-proxy` is set. Without it, `RemoteAddr` is used directly, preventing forged XFF headers from bypassing the auth-failure rate limiter.
+- **ipLimiter size cap:** the auth-failure limiter map is now capped at 10,000 entries to prevent unbounded memory growth under a flood of distinct IPs.
+
+### bugs
+
+- **Docker Compose startup failure:** `docker-compose.yml` now passes `--behind-proxy` so the aegis service does not immediately exit when bound to a non-loopback address inside the container.
+- **CI branch mismatch:** CI workflow now triggers on pushes to `master` (was `main`, so CI never ran on the default branch).
+- **MCP proxy query string dropped:** `forward()` in the MCP proxy now copies `r.URL.RawQuery` to the upstream request URL. Previously query parameters were silently dropped.
+- **Dead policy in `rate-limit.yaml`:** `rate_limit_relaxed` could never fire because `rate_limit_strict` always matched first. The file now documents the two options as mutually exclusive alternatives with the second one commented out.
+
+### improvements
+
+- **Config validation at startup:** `Config.Validate()` is called after loading `aegis.config.yaml`. Typos in `decision:` or `default_decision:` values now cause a fatal error at startup rather than silently allowing everything.
+- **Healthz probes database:** `GET /healthz` on both the intercept server and MCP proxy now pings Postgres. Returns HTTP 503 when the database is unreachable instead of always returning `ok`.
+- **Fail-closed for unimplemented decisions:** the TypeScript SDK now treats `DEFER` and `MODIFY` responses as `DENY` (fail-closed) instead of silently passing through as `ALLOW`. These decision types are not yet implemented server-side.
+
+---
+
 ## v0.1.1 (2026-06-03)
 
 ### security

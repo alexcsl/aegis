@@ -1,6 +1,8 @@
 version: 1
 
-# rate limiting policies for compliance and abuse prevention.
+# Rate limiting policies — pick ONE level. Because policies are first-match,
+# having both active means only the lower threshold (strict) ever fires.
+# Uncomment exactly one block and remove or comment out the other.
 
 policies:
   - name: rate_limit_strict
@@ -10,9 +12,10 @@ policies:
     decision: DENY
     reason: "strict rate limit: more than 30 calls per minute"
 
-  - name: rate_limit_relaxed
-    trigger:
-      tool_calls_per_minute:
-        gt: 60
-    decision: DENY
-    reason: "relaxed rate limit: more than 60 calls per minute"
+  # Uncomment below (and remove rate_limit_strict) for a relaxed limit instead:
+  # - name: rate_limit_relaxed
+  #   trigger:
+  #     tool_calls_per_minute:
+  #       gt: 60
+  #   decision: DENY
+  #   reason: "relaxed rate limit: more than 60 calls per minute"

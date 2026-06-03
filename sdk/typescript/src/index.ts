@@ -71,7 +71,9 @@ export class Aegis {
         )
       }
 
-      if (response.decision === 'DENY') {
+      // MODIFY and DEFER are not yet implemented server-side; treat them as DENY
+      // (fail-closed) rather than silently allowing the call through.
+      if (response.decision !== 'ALLOW') {
         this.onDeny?.(response, tool.name)
         throw new DeniedError(tool.name, response)
       }

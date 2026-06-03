@@ -20,12 +20,14 @@ const reqIDKey ctxKey = "req_id"
 
 // authMiddleware enforces X-Aegis-Key using length-invariant SHA-256 comparison
 // and blocks IPs that exceed 10 failed attempts per minute.
-func authMiddleware(apiKey string) func(http.Handler) http.Handler {
+// behindProxy must be true to trust X-Forwarded-For for IP extraction; when false
+// only RemoteAddr is used, preventing spoofed XFF from bypassing the rate limiter.
+func authMiddleware(apiKey string, behindProxy bool) func(http.Handler) http.Handler {
 	hashed := sha256sum(apiKey)
 	limiter := newIPLimiter(10, time.Minute)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := clientIP(r)
+			ip := clientIP(r, behindProxy)
 			if limiter.isBlocked(ip) {
 				writeError(w, http.StatusTooManyRequests, "too many failed auth attempts")
 				return
@@ -50,13 +52,16 @@ func sha256sum(s string) []byte {
 	return h[:]
 }
 
-// clientIP extracts the originating client IP from X-Forwarded-For or RemoteAddr.
-func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		if idx := strings.Index(fwd, ","); idx != -1 {
-			return strings.TrimSpace(fwd[:idx])
+// clientIP extracts the originating client IP. X-Forwarded-For is only trusted
+// when behindProxy is true; otherwise RemoteAddr is used directly.
+func clientIP(r *http.Request, behindProxy bool) string {
+	if behindProxy {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			if idx := strings.Index(fwd, ","); idx != -1 {
+				return strings.TrimSpace(fwd[:idx])
+			}
+			return strings.TrimSpace(fwd)
 		}
-		return strings.TrimSpace(fwd)
 	}
 	addr := r.RemoteAddr
 	if idx := strings.LastIndex(addr, ":"); idx != -1 {
@@ -91,6 +96,10 @@ func (l *ipLimiter) record(ip string) {
 	defer l.mu.Unlock()
 	e, ok := l.entries[ip]
 	if !ok || time.Now().After(e.windowEnd) {
+		// Cap the map to prevent unbounded memory growth under a flood of distinct IPs.
+		if !ok && len(l.entries) >= 10_000 {
+			return
+		}
 		l.entries[ip] = &ipEntry{count: 1, windowEnd: time.Now().Add(l.window)}
 		return
 	}

@@ -20,7 +20,7 @@ func newAuthRequest(key string) *http.Request {
 }
 
 func TestAuthMiddlewareAllowsCorrectKey(t *testing.T) {
-	mw := authMiddleware("correct-key-for-testing-purposes-1234")
+	mw := authMiddleware("correct-key-for-testing-purposes-1234", false)
 	rr := httptest.NewRecorder()
 	mw(okHandler).ServeHTTP(rr, newAuthRequest("correct-key-for-testing-purposes-1234"))
 	if rr.Code != http.StatusOK {
@@ -29,7 +29,7 @@ func TestAuthMiddlewareAllowsCorrectKey(t *testing.T) {
 }
 
 func TestAuthMiddlewareRejectsWrongKey(t *testing.T) {
-	mw := authMiddleware("correct-key-for-testing-purposes-1234")
+	mw := authMiddleware("correct-key-for-testing-purposes-1234", false)
 	rr := httptest.NewRecorder()
 	mw(okHandler).ServeHTTP(rr, newAuthRequest("wrong-key"))
 	if rr.Code != http.StatusUnauthorized {
@@ -38,7 +38,7 @@ func TestAuthMiddlewareRejectsWrongKey(t *testing.T) {
 }
 
 func TestAuthMiddlewareRejectsMissingKey(t *testing.T) {
-	mw := authMiddleware("correct-key-for-testing-purposes-1234")
+	mw := authMiddleware("correct-key-for-testing-purposes-1234", false)
 	rr := httptest.NewRecorder()
 	mw(okHandler).ServeHTTP(rr, newAuthRequest(""))
 	if rr.Code != http.StatusUnauthorized {
@@ -48,7 +48,7 @@ func TestAuthMiddlewareRejectsMissingKey(t *testing.T) {
 
 func TestAuthMiddlewareRejectsKeyWithDifferentLength(t *testing.T) {
 	// Key with same prefix but different length must still be rejected.
-	mw := authMiddleware("correct-key-for-testing-purposes-1234")
+	mw := authMiddleware("correct-key-for-testing-purposes-1234", false)
 	rr := httptest.NewRecorder()
 	mw(okHandler).ServeHTTP(rr, newAuthRequest("correct-key-for-testing-purposes"))
 	if rr.Code != http.StatusUnauthorized {
@@ -57,7 +57,7 @@ func TestAuthMiddlewareRejectsKeyWithDifferentLength(t *testing.T) {
 }
 
 func TestAuthMiddlewareBlocksAfterTooManyFailures(t *testing.T) {
-	mw := authMiddleware("correct-key-for-testing-purposes-1234")
+	mw := authMiddleware("correct-key-for-testing-purposes-1234", false)
 	handler := mw(okHandler)
 	// exceed the limit (10 failures per minute)
 	for i := 0; i < 10; i++ {
@@ -74,7 +74,7 @@ func TestAuthMiddlewareBlocksAfterTooManyFailures(t *testing.T) {
 
 func TestAuthMiddlewareResetsCounterOnSuccess(t *testing.T) {
 	key := "correct-key-for-testing-purposes-1234"
-	mw := authMiddleware(key)
+	mw := authMiddleware(key, false)
 	handler := mw(okHandler)
 	// 5 bad attempts
 	for i := 0; i < 5; i++ {

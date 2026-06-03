@@ -62,6 +62,25 @@ func (c *Condition) Matches(val float64) bool {
 	return true
 }
 
+// Validate checks that Config contains only recognised values.
+// Call this after LoadConfig to catch typos in policy files at startup.
+func (cfg *Config) Validate() error {
+	validDefault := map[string]bool{"": true, "ALLOW": true, "DENY": true}
+	if !validDefault[cfg.DefaultDecision] {
+		return fmt.Errorf("invalid default_decision %q: must be ALLOW or DENY", cfg.DefaultDecision)
+	}
+	validDecision := map[string]bool{"ALLOW": true, "DENY": true, "DEFER": true, "MODIFY": true}
+	for i, p := range cfg.Policies {
+		if p.Name == "" {
+			return fmt.Errorf("policy[%d] has no name", i)
+		}
+		if !validDecision[p.Decision] {
+			return fmt.Errorf("policy %q: invalid decision %q (must be ALLOW, DENY, DEFER, or MODIFY)", p.Name, p.Decision)
+		}
+	}
+	return nil
+}
+
 // LoadConfig reads the YAML config from path.
 // If the file does not exist, a default empty config is returned.
 func LoadConfig(path string) (*Config, error) {

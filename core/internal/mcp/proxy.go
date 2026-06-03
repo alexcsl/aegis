@@ -90,6 +90,11 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("POST /", p.handleRPC)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if err := p.store.Ping(r.Context()); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintln(w, `{"status":"error","error":"database unavailable"}`)
+			return
+		}
 		_, _ = fmt.Fprintln(w, `{"status":"ok"}`)
 	})
 	return mux
@@ -210,6 +215,7 @@ func (p *Proxy) handleRPC(w http.ResponseWriter, r *http.Request) {
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, body []byte) {
 	target := *p.upstream
 	target.Path = r.URL.Path
+	target.RawQuery = r.URL.RawQuery
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(body))
 	if err != nil {

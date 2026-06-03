@@ -66,6 +66,11 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "session error")
 		return
 	}
+	// Reject cross-agent session access to prevent session poisoning.
+	if sess.AgentID != req.AgentID {
+		writeError(w, http.StatusForbidden, "session belongs to a different agent")
+		return
+	}
 
 	// count calls via SQL so the rate signal is never capped by the history fetch limit
 	recentCount, err := s.store.CountRecentCalls(ctx, req.SessionID, time.Minute)

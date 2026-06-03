@@ -60,7 +60,7 @@ func runServe(args []string) {
 	cfg, db := bootstrap(*cfgPath, *dbURL)
 	defer db.Close()
 
-	srv := proxy.NewServer(*addr, *apiKey, cfg, db)
+	srv := proxy.NewServer(*addr, *apiKey, cfg, db, *behindProxy)
 	slog.Info("aegis serve", "addr", *addr)
 	if !*behindProxy {
 		slog.Warn("serving over plain http — put a TLS-terminating proxy in front for production")
@@ -109,6 +109,9 @@ func bootstrap(cfgPath, dbURL string) (*policy.Config, *store.Store) {
 	cfg, err := policy.LoadConfig(cfgPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid config: %v", err)
 	}
 	ctx := context.Background()
 	db, err := store.New(ctx, dbURL)
