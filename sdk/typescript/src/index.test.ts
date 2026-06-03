@@ -50,7 +50,7 @@ describe('Aegis constructor', () => {
 
 describe('Aegis.wrap — DENY', () => {
   it('throws DeniedError and does not call the underlying tool', async () => {
-    process.env['AEGIS_API_KEY'] = 'test-key'
+    process.env['AEGIS_API_KEY'] = 'test-key-for-unit-tests-only'
     const aegis = new Aegis({ agentId: 'test' })
 
     // Patch the internal client

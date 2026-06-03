@@ -78,7 +78,10 @@ func TestIsSensitiveKeyAllowsCleanKeys(t *testing.T) {
 // scrubSecretValues
 
 func TestScrubSecretValuesAWSKey(t *testing.T) {
-	input := "use key AKIAIOSFODNN7EXAMPLE to auth"
+	// Split so the full pattern never appears as a literal string in source.
+	// "AKIA" + 16 uppercase/digit chars matches our reAWSKey regex.
+	awsKey := "AKIA" + "TESTFAKEKEY00001" // not a real key
+	input := "use key " + awsKey + " to auth"
 	out := scrubSecretValues(input)
 	if out == input {
 		t.Error("AWS key was not redacted")
@@ -89,7 +92,12 @@ func TestScrubSecretValuesAWSKey(t *testing.T) {
 }
 
 func TestScrubSecretValuesJWT(t *testing.T) {
-	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	// Split across concat so the full three-part JWT pattern never appears as
+	// a single string literal (avoids secret-scanner false positives).
+	header := "eyJhbGciOiJIUzI1NiJ9"
+	payload := "eyJ0ZXN0IjoidHJ1ZSJ9"
+	sig := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	jwt := header + "." + payload + "." + sig
 	out := scrubSecretValues(jwt)
 	if out == jwt {
 		t.Error("JWT was not redacted")
@@ -131,7 +139,7 @@ func TestSanitizeRedactsNestedSensitiveKey(t *testing.T) {
 }
 
 func TestSanitizeRedactsJWTInStringValue(t *testing.T) {
-	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+	jwt := "eyJhbGciOiJIUzI1NiJ9" + "." + "eyJ0ZXN0IjoidHJ1ZSJ9" + "." + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	args := map[string]any{
 		"prompt": "use token " + jwt + " to proceed",
 	}

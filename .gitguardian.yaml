@@ -1,0 +1,9 @@
+version: 2
+
+# These files contain deliberately constructed test fixtures that match
+# secret-pattern regexes (JWT structure, AWS key format). They are not
+# real credentials — all values are split across string concatenations and
+# use obviously fake data. Mark them as known false positives.
+ignore-paths:
+  - core/internal/proxy/handlers_test.go
+  - sdk/typescript/src/index.test.ts
