@@ -32,6 +32,11 @@ jobs:
       - name: build
         run: go build ./cmd/aegis
 
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
   typescript:
     name: typescript
     runs-on: ubuntu-latest
@@ -54,6 +59,9 @@ jobs:
 
       - name: build
         run: npm run build
+
+      - name: test
+        run: npm test
 
   docker:
     name: docker build

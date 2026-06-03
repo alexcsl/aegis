@@ -32,4 +32,12 @@ export interface AegisConfig {
   sessionId?: string
   agentId?: string
   onDeny?: (response: InterceptResponse, toolName: string) => void
+  /**
+   * When true, a network error reaching the Aegis core will be swallowed and
+   * the tool call will proceed as if it were ALLOW.
+   *
+   * Default: false (fail-closed). Only set this in local dev environments where
+   * the core is not running. Never use in production.
+   */
+  failOpen?: boolean
 }

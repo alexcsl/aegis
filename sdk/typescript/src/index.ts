@@ -28,6 +28,7 @@ export class Aegis {
   private readonly sessionId: string
   private readonly agentId: string
   private readonly onDeny?: AegisConfig['onDeny']
+  private readonly failOpen: boolean
 
   constructor(config: AegisConfig = {}) {
     const env = (typeof process !== 'undefined' ? process.env : {}) as Record<string, string | undefined>
@@ -42,20 +43,33 @@ export class Aegis {
     this.sessionId = config.sessionId ?? globalThis.crypto.randomUUID()
     this.agentId = config.agentId ?? 'default'
     this.onDeny = config.onDeny
+    this.failOpen = config.failOpen ?? false
   }
 
   // wrap returns a protected version of a single tool.
-  // the wrapped tool checks with aegis before executing.
+  // By default, if the Aegis core is unreachable the call is blocked (fail-closed).
+  // Set failOpen: true in config to allow calls through when the core is down.
   wrap<TArgs extends Record<string, unknown>, TResult>(
     tool: AegisTool<TArgs, TResult>,
   ): AegisTool<TArgs, TResult> {
     const execute = async (args: TArgs): Promise<TResult> => {
-      const response = await this.client.intercept({
-        session_id: this.sessionId,
-        agent_id: this.agentId,
-        tool: tool.name,
-        args: args as Record<string, unknown>,
-      })
+      let response: InterceptResponse
+      try {
+        response = await this.client.intercept({
+          session_id: this.sessionId,
+          agent_id: this.agentId,
+          tool: tool.name,
+          args: args as Record<string, unknown>,
+        })
+      } catch (err) {
+        if (this.failOpen) {
+          return tool.execute(args)
+        }
+        throw new Error(
+          `aegis: core unreachable for tool "${tool.name}" — call blocked (failOpen is false). ` +
+          `Original error: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
 
       if (response.decision === 'DENY') {
         this.onDeny?.(response, tool.name)

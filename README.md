@@ -66,7 +66,9 @@ session update, tool call insert, and trace insert run in goroutines after the r
 **1. spin up aegis**
 
 ```bash
-cp .env.example .env          # set AEGIS_API_KEY to any strong string
+cp .env.example .env          # set AEGIS_API_KEY (use: openssl rand -hex 32)
+# aegis.config.yaml is required — copy the default to start:
+cp policies/security/sensitive-tools.yaml aegis.config.yaml
 docker compose up -d
 ```
 
@@ -104,6 +106,11 @@ define rules in `aegis.config.yaml`. evaluated in order, first match wins.
 
 ```yaml
 version: 1
+
+# default_decision is returned when no policy matches.
+# "ALLOW" (default) = allowlist posture off, blocklist posture on.
+# "DENY"            = allowlist posture — only explicitly allowed tools pass.
+default_decision: ALLOW
 
 policies:
   # block known destructive tools
