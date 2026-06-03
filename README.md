@@ -147,6 +147,43 @@ policies:
 
 available trigger fields: `tool`, `tool_calls_per_minute`, `session_cost_usd`, `risk_score`.
 conditions: `gt`, `gte`, `lt`, `lte`.
+decisions: `ALLOW`, `DENY`, `MODIFY`, `DEFER`.
+
+### MODIFY — rewrite tool args before execution
+
+```yaml
+  - name: cap_search_limit
+    trigger:
+      tool: [search]
+    decision: MODIFY
+    modify:
+      set:    { limit: 50 }      # force a value
+      redact: [api_key]          # replace value with "[redacted]"
+      remove: [debug]            # drop the key entirely
+```
+
+the sdk executes the tool with the rewritten args. over the mcp proxy the forwarded request is rewritten in place.
+
+### DEFER — suspend for human approval
+
+```yaml
+  - name: approve_outbound_email
+    trigger:
+      tool: [send_email]
+    decision: DEFER
+    reason: "outbound email needs human sign-off"
+    notify: https://hooks.example.com/aegis   # optional webhook
+```
+
+on `DEFER` the sdk blocks and polls `GET /v1/decisions/:id` until an operator approves or rejects it (or `deferTimeoutMs`, default 5 min, elapses → fail-closed). resolve with:
+
+```bash
+curl -X POST localhost:8080/v1/decisions/<id>/resolve \
+  -H "X-Aegis-Key: $AEGIS_ADMIN_KEY" \
+  -d '{"action":"approve"}'   # or "reject"
+```
+
+set `AEGIS_ADMIN_KEY` so agents can't approve their own deferred calls. DEFER is not supported over the mcp proxy (it fails closed there).
 
 ---
 
@@ -189,16 +226,25 @@ all endpoints require `X-Aegis-Key`.
 ```
 POST /v1/intercept
   { session_id, agent_id, tool, args, context?, cost_usd? }
-  → { decision, reason?, policy?, risk_score, latency_ms }
+  → { decision, reason?, policy?, risk_score, latency_ms, decision_id?, modified_args? }
 
-GET  /v1/session/:id
+GET  /v1/session/:id?agent_id=...
   → full session context + accumulated stats
 
-GET  /v1/traces?session_id=...
+GET  /v1/traces?session_id=...&agent_id=...
   → last 100 trace events for a session
 
+GET  /v1/decisions/:id?agent_id=...        # poll a DEFER decision (agent key)
+  → { id, status: pending|approved|rejected, ... }
+
+POST /v1/decisions/:id/resolve             # approve/reject (admin key)
+  { action: "approve" | "reject" }
+
+GET  /v1/decisions                         # list pending decisions (admin key)
+  → [ { id, tool, status, ... } ]
+
 GET  /healthz
-  → { status: "ok" }
+  → { status: "ok" }   # 503 if postgres is unreachable
 ```
 
 ---
@@ -228,7 +274,7 @@ the go binary is a single static file (~8MB). the docker image is built on scrat
 
 ## roadmap
 
-**v0.1 — current**
+**v0.1**
 - [x] go proxy core (ALLOW / DENY)
 - [x] session context store in postgres
 - [x] rule-based risk scoring
@@ -237,9 +283,11 @@ the go binary is a single static file (~8MB). the docker image is built on scrat
 - [x] mcp transparent proxy mode
 - [x] docker compose setup
 
-**v0.2**
-- [ ] `MODIFY` decision — sanitize tool output before the agent sees it (pii redaction)
-- [ ] `DEFER` decision — suspend call, fire webhook for human approval
+**v0.2 — current**
+- [x] `MODIFY` decision — rewrite tool input args before execution (`set` / `redact` / `remove`)
+- [x] `DEFER` decision — suspend call, poll for human approval, optional notify webhook
+- [x] admin key separation for approval endpoints
+- [x] `/healthz` database probe + startup config validation
 - [ ] python sdk
 - [ ] langchain + openai agents sdk middleware integrations
 

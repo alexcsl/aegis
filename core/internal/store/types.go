@@ -23,6 +23,21 @@ type ToolCall struct {
 	CostUSD   float64        `json:"cost_usd"`
 }
 
+// PendingDecision is a tool call suspended by a DEFER policy, awaiting
+// approval or rejection by a human operator.
+type PendingDecision struct {
+	ID         string         `json:"id"`
+	SessionID  string         `json:"session_id"`
+	AgentID    string         `json:"agent_id"`
+	Tool       string         `json:"tool"`
+	Args       map[string]any `json:"args"`
+	Reason     string         `json:"reason,omitempty"`
+	Policy     string         `json:"policy,omitempty"`
+	Status     string         `json:"status"` // pending | approved | rejected
+	CreatedAt  time.Time      `json:"created_at"`
+	ResolvedAt *time.Time     `json:"resolved_at,omitempty"`
+}
+
 type Trace struct {
 	TraceID         string         `json:"trace_id"`
 	SessionID       string         `json:"session_id"`

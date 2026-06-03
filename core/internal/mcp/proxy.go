@@ -181,7 +181,8 @@ func (p *Proxy) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 	bg := context.WithoutCancel(ctx)
 
-	if dec.Action == "DENY" {
+	switch dec.Action {
+	case "DENY":
 		writeRPCError(w, req.ID, -32603, fmt.Sprintf("denied by policy %q: %s", dec.Policy, dec.Reason))
 		go func() {
 			if err := p.store.AppendToolCall(bg, sessionID, store.ToolCall{
@@ -191,6 +192,29 @@ func (p *Proxy) handleRPC(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		return
+	case "DEFER":
+		// The mcp proxy is synchronous json-rpc with no polling channel, so a
+		// deferred call cannot wait for human approval here — fail closed.
+		writeRPCError(w, req.ID, -32603, fmt.Sprintf("call deferred by policy %q for human approval; DEFER is not supported over the mcp proxy — use the SDK", dec.Policy))
+		go func() {
+			if err := p.store.AppendToolCall(bg, sessionID, store.ToolCall{
+				Tool: params.Name, Decision: "DEFER", Timestamp: time.Now(),
+			}); err != nil {
+				slog.Error("mcp: append tool call", "err", err)
+			}
+		}()
+		return
+	case "MODIFY":
+		// Rewrite the tool arguments in place, then forward the modified request.
+		if dec.Modify != nil {
+			params.Arguments = dec.Modify.Apply(params.Arguments)
+			if newParams, err := json.Marshal(params); err == nil {
+				req.Params = newParams
+				if newBody, err := json.Marshal(req); err == nil {
+					body = newBody
+				}
+			}
+		}
 	}
 
 	p.forward(w, r, body)

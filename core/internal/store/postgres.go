@@ -96,6 +96,22 @@ CREATE TABLE IF NOT EXISTS traces (
 
 CREATE INDEX IF NOT EXISTS traces_session_id_idx ON traces (session_id);
 CREATE INDEX IF NOT EXISTS traces_timestamp_idx  ON traces (timestamp);
+
+CREATE TABLE IF NOT EXISTS pending_decisions (
+	id          TEXT PRIMARY KEY,
+	session_id  TEXT        NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+	agent_id    TEXT        NOT NULL,
+	tool        TEXT        NOT NULL,
+	args        JSONB,
+	reason      TEXT,
+	policy      TEXT,
+	status      TEXT        NOT NULL DEFAULT 'pending',
+	created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	resolved_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS pending_decisions_session_id_idx ON pending_decisions (session_id);
+CREATE INDEX IF NOT EXISTS pending_decisions_status_idx     ON pending_decisions (status);
 `
 
 // GetOrCreateSession upserts a session row and returns it.
@@ -272,6 +288,100 @@ func (s *Store) CountRecentCalls(ctx context.Context, sessionID string, window t
 		return 0, fmt.Errorf("count recent calls: %w", err)
 	}
 	return n, nil
+}
+
+// CreatePendingDecision inserts a suspended tool call awaiting human resolution.
+func (s *Store) CreatePendingDecision(ctx context.Context, pd PendingDecision) error {
+	args, _ := json.Marshal(pd.Args)
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO pending_decisions (id, session_id, agent_id, tool, args, reason, policy, status, created_at)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), 'pending', NOW())
+	`, pd.ID, pd.SessionID, pd.AgentID, pd.Tool, args, pd.Reason, pd.Policy)
+	return err
+}
+
+// GetPendingDecision returns a pending decision by ID, or nil if not found.
+func (s *Store) GetPendingDecision(ctx context.Context, id string) (*PendingDecision, error) {
+	var (
+		pd       PendingDecision
+		argsJSON []byte
+		reason   *string
+		policy   *string
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, session_id, agent_id, tool, args, reason, policy, status, created_at, resolved_at
+		FROM pending_decisions WHERE id = $1
+	`, id).Scan(
+		&pd.ID, &pd.SessionID, &pd.AgentID, &pd.Tool, &argsJSON,
+		&reason, &policy, &pd.Status, &pd.CreatedAt, &pd.ResolvedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get pending decision: %w", err)
+	}
+	if reason != nil {
+		pd.Reason = *reason
+	}
+	if policy != nil {
+		pd.Policy = *policy
+	}
+	_ = json.Unmarshal(argsJSON, &pd.Args)
+	return &pd, nil
+}
+
+// ResolvePendingDecision sets the status of a still-pending decision to
+// "approved" or "rejected". It reports whether a row was actually updated;
+// a decision that was already resolved is left untouched and returns false.
+func (s *Store) ResolvePendingDecision(ctx context.Context, id, status string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE pending_decisions
+		SET status = $2, resolved_at = NOW()
+		WHERE id = $1 AND status = 'pending'
+	`, id, status)
+	if err != nil {
+		return false, fmt.Errorf("resolve pending decision: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ListPendingDecisions returns the most recent decisions still awaiting resolution.
+func (s *Store) ListPendingDecisions(ctx context.Context, limit int) ([]PendingDecision, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, session_id, agent_id, tool, args, reason, policy, status, created_at, resolved_at
+		FROM pending_decisions WHERE status = 'pending'
+		ORDER BY created_at DESC LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending decisions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PendingDecision
+	for rows.Next() {
+		var (
+			pd       PendingDecision
+			argsJSON []byte
+			reason   *string
+			policy   *string
+		)
+		if err := rows.Scan(
+			&pd.ID, &pd.SessionID, &pd.AgentID, &pd.Tool, &argsJSON,
+			&reason, &policy, &pd.Status, &pd.CreatedAt, &pd.ResolvedAt,
+		); err != nil {
+			return nil, err
+		}
+		if reason != nil {
+			pd.Reason = *reason
+		}
+		if policy != nil {
+			pd.Policy = *policy
+		}
+		_ = json.Unmarshal(argsJSON, &pd.Args)
+		out = append(out, pd)
+	}
+	return out, rows.Err()
 }
 
 // PruneExpiredSessions removes sessions older than maxAge and cascades to related rows.

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,10 @@ type interceptResponse struct {
 	Policy    string  `json:"policy,omitempty"`
 	RiskScore float64 `json:"risk_score"`
 	LatencyMs int64   `json:"latency_ms"`
+	// DecisionID is set on DEFER: the id the SDK polls for resolution.
+	DecisionID string `json:"decision_id,omitempty"`
+	// ModifiedArgs is set on MODIFY: the rewritten args the SDK must execute with.
+	ModifiedArgs map[string]any `json:"modified_args,omitempty"`
 }
 
 func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +103,50 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 	// handler returns (http/2 cancels r.Context() immediately on return)
 	bg := context.WithoutCancel(ctx)
 
+	resp := interceptResponse{
+		Decision:  dec.Action,
+		Reason:    dec.Reason,
+		Policy:    dec.Policy,
+		RiskScore: score.Total,
+	}
+
+	// MODIFY rewrites the input args; the SDK executes with these instead.
+	execArgs := req.Args
+	if dec.Action == "MODIFY" && dec.Modify != nil {
+		execArgs = dec.Modify.Apply(req.Args)
+		resp.ModifiedArgs = execArgs
+	}
+
+	// DEFER suspends the call: persist a pending decision (synchronously, since we
+	// return its id) and optionally fire a webhook so a human is alerted.
+	if dec.Action == "DEFER" {
+		decisionID := uuid.New().String()
+		if err := s.store.CreatePendingDecision(ctx, store.PendingDecision{
+			ID:        decisionID,
+			SessionID: req.SessionID,
+			AgentID:   req.AgentID,
+			Tool:      req.Tool,
+			Args:      sanitize(req.Args),
+			Reason:    dec.Reason,
+			Policy:    dec.Policy,
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not record deferred decision")
+			return
+		}
+		resp.DecisionID = decisionID
+		if dec.Notify != "" {
+			go fireWebhook(bg, dec.Notify, webhookPayload{
+				Event:      "decision.deferred",
+				DecisionID: decisionID,
+				SessionID:  req.SessionID,
+				AgentID:    req.AgentID,
+				Tool:       req.Tool,
+				Reason:     dec.Reason,
+				Policy:     dec.Policy,
+			})
+		}
+	}
+
 	sess.RiskScore = score.Total
 	sess.ToolCallCount++
 	sess.CostUSD += req.CostUSD
@@ -107,20 +156,22 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	call := store.ToolCall{
-		Tool:      req.Tool,
-		Args:      sanitize(req.Args),
-		Decision:  dec.Action,
-		Timestamp: time.Now(),
-		CostUSD:   req.CostUSD,
-	}
+	// record the args that were (or would be) executed — MODIFY-rewritten when applicable
+	recordedArgs := sanitize(execArgs)
 	go func() {
-		if err := s.store.AppendToolCall(bg, req.SessionID, call); err != nil {
+		if err := s.store.AppendToolCall(bg, req.SessionID, store.ToolCall{
+			Tool:      req.Tool,
+			Args:      recordedArgs,
+			Decision:  dec.Action,
+			Timestamp: time.Now(),
+			CostUSD:   req.CostUSD,
+		}); err != nil {
 			slog.Error("append tool call", "session", req.SessionID, "err", err)
 		}
 	}()
 
 	latency := time.Since(start).Milliseconds()
+	resp.LatencyMs = latency
 
 	trace := store.Trace{
 		TraceID:         uuid.New().String(),
@@ -128,7 +179,7 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		AgentID:         req.AgentID,
 		Timestamp:       time.Now(),
 		Tool:            req.Tool,
-		Input:           sanitize(req.Args),
+		Input:           recordedArgs,
 		Decision:        dec.Action,
 		PolicyTriggered: dec.Policy,
 		RiskScore:       score.Total,
@@ -141,13 +192,7 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	writeJSON(w, http.StatusOK, interceptResponse{
-		Decision:  dec.Action,
-		Reason:    dec.Reason,
-		Policy:    dec.Policy,
-		RiskScore: score.Total,
-		LatencyMs: latency,
-	})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +250,116 @@ func (s *Server) handleGetTraces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, traces)
+}
+
+// handleGetDecision lets the SDK poll a deferred decision for its resolution.
+// Requires ?agent_id= and validates ownership to prevent cross-agent reads.
+func (s *Server) handleGetDecision(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	agentID := r.URL.Query().Get("agent_id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "decision id required")
+		return
+	}
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id query param required")
+		return
+	}
+	pd, err := s.store.GetPendingDecision(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	if pd == nil || pd.AgentID != agentID {
+		writeError(w, http.StatusNotFound, "decision not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, pd)
+}
+
+// resolveRequest is the body of POST /v1/decisions/{id}/resolve.
+type resolveRequest struct {
+	Action string `json:"action"` // approve | reject
+}
+
+// handleResolveDecision is an operator action (admin-authed) that approves or
+// rejects a pending decision. The agent then sees the new status on its next poll.
+func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "decision id required")
+		return
+	}
+	var body resolveRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	var status string
+	switch body.Action {
+	case "approve":
+		status = "approved"
+	case "reject":
+		status = "rejected"
+	default:
+		writeError(w, http.StatusBadRequest, `action must be "approve" or "reject"`)
+		return
+	}
+	updated, err := s.store.ResolvePendingDecision(r.Context(), id, status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	if !updated {
+		writeError(w, http.StatusConflict, "decision not found or already resolved")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": status})
+}
+
+// handleListDecisions returns pending decisions for an operator (admin-authed).
+func (s *Server) handleListDecisions(w http.ResponseWriter, r *http.Request) {
+	decisions, err := s.store.ListPendingDecisions(r.Context(), 100)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	writeJSON(w, http.StatusOK, decisions)
+}
+
+// webhookPayload is the JSON body POSTed to a policy's notify URL.
+type webhookPayload struct {
+	Event      string `json:"event"`
+	DecisionID string `json:"decision_id"`
+	SessionID  string `json:"session_id"`
+	AgentID    string `json:"agent_id"`
+	Tool       string `json:"tool"`
+	Reason     string `json:"reason,omitempty"`
+	Policy     string `json:"policy,omitempty"`
+}
+
+// webhookClient is shared across notify deliveries; the URL comes from operator
+// config (not user input), so this is not a user-controlled SSRF surface.
+var webhookClient = &http.Client{Timeout: 5 * time.Second}
+
+// fireWebhook POSTs payload to url on a best-effort basis. Failures are logged, not retried.
+func fireWebhook(ctx context.Context, url string, payload webhookPayload) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		slog.Error("webhook build", "url", url, "err", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := webhookClient.Do(req)
+	if err != nil {
+		slog.Error("webhook deliver", "url", url, "err", err)
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 // idPattern matches safe opaque identifiers: alphanumeric plus - _ .

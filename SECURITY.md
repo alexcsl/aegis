@@ -85,9 +85,14 @@ before exposing aegis to any network traffic outside localhost:
       allowlist posture — only explicitly named tools will pass
 - [ ] rotate the api key quarterly
 
-## known limitations (v0.1)
+## defer approval boundary
 
-- the `MODIFY` and `DEFER` decisions are not yet implemented (v0.2 roadmap)
+`DEFER` suspends a tool call until a human approves it. Approval (`POST /v1/decisions/:id/resolve`) and listing (`GET /v1/decisions`) are guarded by an admin key (`AEGIS_ADMIN_KEY`). If you do not set one, these endpoints fall back to `AEGIS_API_KEY` — the same key your agents hold — which means an agent could approve its own deferred calls. Set a distinct `AEGIS_ADMIN_KEY` in any deployment where agents are not fully trusted; aegis logs a warning at startup when it is unset.
+
+## known limitations (v0.2)
+
 - no built-in tls
 - no multi-tenancy; single api key per deployment
-- behavioral ml scoring is rule-based in v0.1
+- behavioral ml scoring is rule-based
+- `MODIFY` rewrites tool *input* args only (not tool output)
+- `DEFER` is not available over the synchronous mcp proxy (it fails closed there); use the sdk

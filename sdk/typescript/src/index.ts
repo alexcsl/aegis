@@ -1,7 +1,17 @@
 import { AegisClient } from './client.js'
 import type { AegisConfig, AegisTool, InterceptResponse } from './types.js'
 
-export type { AegisConfig, AegisTool, Decision, InterceptRequest, InterceptResponse } from './types.js'
+export type {
+  AegisConfig,
+  AegisTool,
+  Decision,
+  DecisionStatus,
+  InterceptRequest,
+  InterceptResponse,
+  PendingDecision,
+} from './types.js'
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 // thrown when a tool call is blocked by an aegis policy.
 export class DeniedError extends Error {
@@ -29,6 +39,8 @@ export class Aegis {
   private readonly agentId: string
   private readonly onDeny?: AegisConfig['onDeny']
   private readonly failOpen: boolean
+  private readonly deferPollIntervalMs: number
+  private readonly deferTimeoutMs: number
 
   constructor(config: AegisConfig = {}) {
     const env = (typeof process !== 'undefined' ? process.env : {}) as Record<string, string | undefined>
@@ -44,6 +56,8 @@ export class Aegis {
     this.agentId = config.agentId ?? 'default'
     this.onDeny = config.onDeny
     this.failOpen = config.failOpen ?? false
+    this.deferPollIntervalMs = config.deferPollIntervalMs ?? 2000
+    this.deferTimeoutMs = config.deferTimeoutMs ?? 300_000
   }
 
   // wrap returns a protected version of a single tool.
@@ -71,14 +85,22 @@ export class Aegis {
         )
       }
 
-      // MODIFY and DEFER are not yet implemented server-side; treat them as DENY
-      // (fail-closed) rather than silently allowing the call through.
-      if (response.decision !== 'ALLOW') {
-        this.onDeny?.(response, tool.name)
-        throw new DeniedError(tool.name, response)
+      switch (response.decision) {
+        case 'ALLOW':
+          return tool.execute(args)
+        case 'MODIFY':
+          // Execute with the server-rewritten args; fall back to the originals
+          // if the server signalled MODIFY without providing them.
+          return tool.execute((response.modified_args as TArgs) ?? args)
+        case 'DEFER':
+          // Block until a human approves; throws on reject or timeout (fail-closed).
+          await this.awaitApproval(response, tool.name)
+          return tool.execute(args)
+        default:
+          // DENY or any unexpected decision — fail closed.
+          this.onDeny?.(response, tool.name)
+          throw new DeniedError(tool.name, response)
       }
-
-      return tool.execute(args)
     }
 
     const wrapped: AegisTool<TArgs, TResult> = tool.description !== undefined
@@ -86,6 +108,31 @@ export class Aegis {
       : { name: tool.name, execute }
 
     return wrapped
+  }
+
+  // awaitApproval polls a deferred decision until it is approved (returns),
+  // rejected (throws DeniedError), or the timeout elapses (throws — fail-closed).
+  private async awaitApproval(response: InterceptResponse, toolName: string): Promise<void> {
+    const id = response.decision_id
+    if (!id) {
+      this.onDeny?.(response, toolName)
+      throw new DeniedError(toolName, response)
+    }
+    const deadline = Date.now() + this.deferTimeoutMs
+    for (;;) {
+      const pd = await this.client.getDecision(id, this.agentId)
+      if (pd.status === 'approved') return
+      if (pd.status === 'rejected') {
+        this.onDeny?.(response, toolName)
+        throw new DeniedError(toolName, response)
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `aegis: tool "${toolName}" was deferred for approval but timed out after ${this.deferTimeoutMs}ms — call blocked (fail-closed)`,
+        )
+      }
+      await sleep(this.deferPollIntervalMs)
+    }
   }
 
   // wrapAll wraps every tool in a keyed object, returning the same shape.

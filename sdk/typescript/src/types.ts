@@ -15,6 +15,22 @@ export interface InterceptResponse {
   policy?: string
   risk_score: number
   latency_ms: number
+  /** Set on DEFER: the id to poll via GET /v1/decisions/:id for resolution. */
+  decision_id?: string
+  /** Set on MODIFY: the rewritten args the SDK must execute the tool with. */
+  modified_args?: Record<string, unknown>
+}
+
+export type DecisionStatus = 'pending' | 'approved' | 'rejected'
+
+export interface PendingDecision {
+  id: string
+  session_id: string
+  agent_id: string
+  tool: string
+  status: DecisionStatus
+  reason?: string
+  policy?: string
 }
 
 export interface AegisTool<
@@ -40,4 +56,13 @@ export interface AegisConfig {
    * the core is not running. Never use in production.
    */
   failOpen?: boolean
+  /**
+   * How often (ms) to poll a DEFER decision for resolution. Default: 2000.
+   */
+  deferPollIntervalMs?: number
+  /**
+   * How long (ms) to wait for a DEFER decision to be approved before failing
+   * closed (the call is rejected). Default: 300000 (5 minutes).
+   */
+  deferTimeoutMs?: number
 }

@@ -1,0 +1,34 @@
+version: 1
+
+# Examples of the MODIFY and DEFER decisions (v0.2).
+# MODIFY rewrites a tool's input args before execution.
+# DEFER suspends the call until a human approves it via the decisions API.
+
+policies:
+  # force a safe upper bound on a search tool's limit, and drop a debug flag
+  - name: cap_search_limit
+    trigger:
+      tool: [search, search_web, query]
+    decision: MODIFY
+    modify:
+      set:
+        limit: 50
+      remove:
+        - debug
+
+  # outbound email always needs a human to sign off
+  - name: approve_outbound_email
+    trigger:
+      tool: [send_email, send_sms]
+    decision: DEFER
+    reason: "outbound communication requires human approval"
+    # optional: POST a json payload here when a call is deferred
+    # notify: https://hooks.example.com/aegis
+
+  # defer anything the scorer flags as high risk instead of hard-denying it
+  - name: defer_high_risk
+    trigger:
+      risk_score:
+        gte: 0.85
+    decision: DEFER
+    reason: "high risk score — holding for review"

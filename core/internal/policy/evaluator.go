@@ -8,9 +8,13 @@ import (
 
 // Decision is the result of evaluating all policies against a request.
 type Decision struct {
-	Action string // ALLOW, DENY, DEFER
+	Action string // ALLOW, DENY, DEFER, MODIFY
 	Reason string
 	Policy string
+	// Notify is the webhook URL from the matched policy, if any.
+	Notify string
+	// Modify is the arg-rewrite spec, set only when Action is MODIFY.
+	Modify *ModifySpec
 }
 
 // EvalRequest carries all context needed to evaluate policies.
@@ -42,6 +46,8 @@ func (e *Evaluator) Evaluate(req EvalRequest) Decision {
 				Action: p.Decision,
 				Reason: p.Reason,
 				Policy: p.Name,
+				Notify: p.Notify,
+				Modify: p.Modify,
 			}
 		}
 	}

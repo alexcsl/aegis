@@ -19,11 +19,52 @@ type Config struct {
 
 // Policy is a single rule: when trigger matches, apply decision.
 type Policy struct {
-	Name     string  `yaml:"name"`
-	Trigger  Trigger `yaml:"trigger"`
-	Decision string  `yaml:"decision"` // ALLOW | DENY | DEFER
-	Reason   string  `yaml:"reason,omitempty"`
-	Notify   string  `yaml:"notify,omitempty"`
+	Name     string      `yaml:"name"`
+	Trigger  Trigger     `yaml:"trigger"`
+	Decision string      `yaml:"decision"` // ALLOW | DENY | DEFER | MODIFY
+	Reason   string      `yaml:"reason,omitempty"`
+	// Notify is an optional webhook URL. When set, a JSON payload is POSTed to it
+	// (best effort) whenever this policy fires — primarily used to alert a human
+	// that a DEFER decision is awaiting approval.
+	Notify   string      `yaml:"notify,omitempty"`
+	// Modify is required when Decision is MODIFY. It describes how the tool's
+	// input arguments are rewritten before execution.
+	Modify   *ModifySpec `yaml:"modify,omitempty"`
+}
+
+// ModifySpec rewrites a tool call's input arguments before execution.
+// Operations are applied in order: set, then redact, then remove.
+type ModifySpec struct {
+	// Set assigns top-level keys to fixed values (e.g. force a `limit`).
+	Set map[string]any `yaml:"set,omitempty"`
+	// Redact replaces the value of each named top-level key with "[redacted]".
+	Redact []string `yaml:"redact,omitempty"`
+	// Remove deletes each named top-level key.
+	Remove []string `yaml:"remove,omitempty"`
+}
+
+// Apply returns a shallow copy of args with the spec's operations applied.
+// The input map is never mutated. A nil spec returns args unchanged.
+func (m *ModifySpec) Apply(args map[string]any) map[string]any {
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		out[k] = v
+	}
+	if m == nil {
+		return out
+	}
+	for k, v := range m.Set {
+		out[k] = v
+	}
+	for _, k := range m.Redact {
+		if _, ok := out[k]; ok {
+			out[k] = "[redacted]"
+		}
+	}
+	for _, k := range m.Remove {
+		delete(out, k)
+	}
+	return out
 }
 
 // Trigger defines the conditions that activate a policy.
@@ -76,6 +117,12 @@ func (cfg *Config) Validate() error {
 		}
 		if !validDecision[p.Decision] {
 			return fmt.Errorf("policy %q: invalid decision %q (must be ALLOW, DENY, DEFER, or MODIFY)", p.Name, p.Decision)
+		}
+		if p.Decision == "MODIFY" && p.Modify == nil {
+			return fmt.Errorf("policy %q: MODIFY decision requires a modify block", p.Name)
+		}
+		if p.Decision != "MODIFY" && p.Modify != nil {
+			return fmt.Errorf("policy %q: modify block is only valid with a MODIFY decision", p.Name)
 		}
 	}
 	return nil

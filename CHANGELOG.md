@@ -1,5 +1,34 @@
 # changelog
 
+## v0.2.0 (2026-06-03)
+
+### features
+
+- **`MODIFY` decision:** a policy can now rewrite a tool's input arguments before execution via a `modify:` block with `set` (force a value), `redact` (replace a value with `[redacted]`), and `remove` (drop a key). The intercept API echoes the rewritten args back as `modified_args`; the TypeScript SDK executes the tool with them. The MCP proxy rewrites the forwarded request in place.
+- **`DEFER` decision:** a policy can suspend a tool call for human approval. The call is persisted to a new `pending_decisions` table and the SDK blocks, polling `GET /v1/decisions/:id` until an operator approves or rejects it (or `deferTimeoutMs`, default 5 min, elapses → fail-closed). New endpoints:
+  - `GET /v1/decisions/:id?agent_id=...` — agent polls its own decision (ownership-checked).
+  - `POST /v1/decisions/:id/resolve` — operator approves/rejects (admin-authed).
+  - `GET /v1/decisions` — operator lists pending decisions (admin-authed).
+- **`notify` webhook:** the previously-unused policy `notify:` field now fires a best-effort JSON webhook when a `DEFER` decision is created, so a human can be alerted. The URL comes from operator config (not user input).
+
+### security
+
+- **Admin key separation:** `AEGIS_ADMIN_KEY` / `--admin-key` guards the DEFER resolve and list endpoints. Without it they fall back to `AEGIS_API_KEY` — the key agents hold — which would let an agent approve its own deferred calls. aegis logs a warning at startup when no admin key is set.
+- **MODIFY/DEFER are no longer silent passes:** unimplemented decision handling was removed; both are now first-class. Over the MCP proxy, `DEFER` fails closed (there is no polling channel).
+
+### sdk (`@aegis-ai-observable/sdk` 0.2.0)
+
+- Handles `MODIFY` (executes with `modified_args`) and `DEFER` (polls for approval).
+- New config: `deferPollIntervalMs` (default 2000) and `deferTimeoutMs` (default 300000).
+- New exported types: `DecisionStatus`, `PendingDecision`.
+
+### notes
+
+- MODIFY rewrites tool *input* args, not tool output.
+- The README roadmap framed MODIFY as output sanitization; the shipped behavior is input-arg rewriting, which fits the pre-execution intercept model.
+
+---
+
 ## v0.1.2 (2026-06-03)
 
 ### security

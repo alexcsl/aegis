@@ -1,4 +1,4 @@
-import type { InterceptRequest, InterceptResponse } from './types.js'
+import type { InterceptRequest, InterceptResponse, PendingDecision } from './types.js'
 
 export class AegisClient {
   private readonly base: string
@@ -25,5 +25,21 @@ export class AegisClient {
     }
 
     return res.json() as Promise<InterceptResponse>
+  }
+
+  // getDecision polls a deferred decision for its current resolution status.
+  async getDecision(id: string, agentId: string): Promise<PendingDecision> {
+    const url = `${this.base}/v1/decisions/${encodeURIComponent(id)}?agent_id=${encodeURIComponent(agentId)}`
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'X-Aegis-Key': this.apiKey },
+    })
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(`aegis: decision poll failed (${res.status}): ${text}`)
+    }
+
+    return res.json() as Promise<PendingDecision>
   }
 }
