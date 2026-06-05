@@ -1,5 +1,30 @@
 # changelog
 
+## v0.3.0 (2026-06-05)
+
+### features
+
+- **Python SDK (`aegis-sdk` 0.3.0):** full parity with the TypeScript SDK.
+  - `AsyncAegis` for async code (OpenAI Agents SDK, asyncio-based frameworks).
+  - `Aegis` for sync code (LangChain sync tools, scripts) — uses a dedicated background event loop so it is safe to call from inside an existing async event loop.
+  - Decorator-style `@aegis.wrap` and bulk `wrap_all()`.
+  - ALLOW, DENY, MODIFY (executes with `modified_args`), DEFER (polls until approved/rejected/timeout).
+  - `fail_open`, `defer_poll_interval`, `defer_timeout` config.
+  - Context manager support (`async with AsyncAegis(...)` / `with Aegis(...)`).
+  - 18 pytest tests covering all code paths.
+- **LangChain integration example** (`examples/python-langchain/`) — wraps LangChain `@tool` functions with `@aegis.wrap`.
+- **OpenAI Agents SDK integration example** (`examples/python-openai-agents/`) — wraps `@function_tool` callables with `@aegis.wrap` using `AsyncAegis`.
+- **`token_count` wired through:** add `token_count` to `POST /v1/intercept` and it accumulates on `session.token_count`.
+- **Traces pagination:** `GET /v1/traces` now accepts `?limit=` (default 100, max 500) and `?offset=` for cursor-free pagination.
+- **Sessions listing:** `GET /v1/sessions?agent_id=...` returns the most recently active sessions for an agent (paginated).
+
+### improvements
+
+- Dead code removed: `core/internal/util/calls.go` was an empty stub package.
+- CI now runs the Python SDK test suite on every push/PR.
+
+---
+
 ## v0.2.0 (2026-06-03)
 
 ### features

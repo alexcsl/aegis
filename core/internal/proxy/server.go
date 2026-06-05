@@ -35,6 +35,7 @@ func NewServer(addr, apiKey, adminKey string, cfg *policy.Config, db *store.Stor
 	adminAuth := authMiddleware(adminKey, behindProxy)
 
 	mux.Handle("POST /v1/intercept",      auth(http.HandlerFunc(s.handleIntercept)))
+	mux.Handle("GET /v1/sessions",        auth(http.HandlerFunc(s.handleListSessions)))
 	mux.Handle("GET /v1/session/{id}",    auth(http.HandlerFunc(s.handleGetSession)))
 	mux.Handle("GET /v1/traces",          auth(http.HandlerFunc(s.handleGetTraces)))
 

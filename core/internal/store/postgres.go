@@ -241,14 +241,15 @@ func (s *Store) InsertTrace(ctx context.Context, t Trace) error {
 	return err
 }
 
-// GetTraces returns recent traces for a session.
-func (s *Store) GetTraces(ctx context.Context, sessionID string, limit int) ([]Trace, error) {
+// GetTraces returns traces for a session with optional pagination.
+// Passing offset=0 and limit=100 replicates the previous behaviour.
+func (s *Store) GetTraces(ctx context.Context, sessionID string, limit, offset int) ([]Trace, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT trace_id, session_id, agent_id, timestamp, tool, input,
 		       decision, policy_triggered, risk_score, latency_ms, cost_usd
 		FROM traces WHERE session_id = $1
-		ORDER BY timestamp DESC LIMIT $2
-	`, sessionID, limit)
+		ORDER BY timestamp DESC LIMIT $2 OFFSET $3
+	`, sessionID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("get traces: %w", err)
 	}
@@ -274,6 +275,42 @@ func (s *Store) GetTraces(ctx context.Context, sessionID string, limit int) ([]T
 		traces = append(traces, t)
 	}
 	return traces, rows.Err()
+}
+
+// ListSessions returns the most recently active sessions for a given agent.
+func (s *Store) ListSessions(ctx context.Context, agentID string, limit, offset int) ([]Session, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, agent_id, start_time, initial_intent, risk_score, flags,
+		       cost_usd, token_count, tool_call_count, updated_at
+		FROM sessions WHERE agent_id = $1
+		ORDER BY updated_at DESC LIMIT $2 OFFSET $3
+	`, agentID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Session
+	for rows.Next() {
+		var (
+			sess      Session
+			flagsJSON []byte
+			intent    *string
+		)
+		if err := rows.Scan(
+			&sess.ID, &sess.AgentID, &sess.StartTime, &intent,
+			&sess.RiskScore, &flagsJSON,
+			&sess.CostUSD, &sess.TokenCount, &sess.ToolCallCount, &sess.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if intent != nil {
+			sess.InitialIntent = *intent
+		}
+		_ = json.Unmarshal(flagsJSON, &sess.Flags)
+		out = append(out, sess)
+	}
+	return out, rows.Err()
 }
 
 // CountRecentCalls returns the number of calls for a session within the given window.

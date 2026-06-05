@@ -231,8 +231,11 @@ POST /v1/intercept
 GET  /v1/session/:id?agent_id=...
   → full session context + accumulated stats
 
-GET  /v1/traces?session_id=...&agent_id=...
-  → last 100 trace events for a session
+GET  /v1/traces?session_id=...&agent_id=...&limit=100&offset=0
+  → trace events for a session (paginated)
+
+GET  /v1/sessions?agent_id=...&limit=50&offset=0
+  → sessions for an agent (most recently active first)
 
 GET  /v1/decisions/:id?agent_id=...        # poll a DEFER decision (agent key)
   → { id, status: pending|approved|rejected, ... }
@@ -283,13 +286,19 @@ the go binary is a single static file (~8MB). the docker image is built on scrat
 - [x] mcp transparent proxy mode
 - [x] docker compose setup
 
-**v0.2 — current**
+**v0.2**
 - [x] `MODIFY` decision — rewrite tool input args before execution (`set` / `redact` / `remove`)
 - [x] `DEFER` decision — suspend call, poll for human approval, optional notify webhook
 - [x] admin key separation for approval endpoints
 - [x] `/healthz` database probe + startup config validation
-- [ ] python sdk
-- [ ] langchain + openai agents sdk middleware integrations
+
+**v0.3 — current**
+- [x] Python SDK (`aegis-sdk` on PyPI) — `AsyncAegis` + sync `Aegis`, full DEFER/MODIFY support
+- [x] LangChain integration example (`examples/python-langchain/`)
+- [x] OpenAI Agents SDK integration example (`examples/python-openai-agents/`)
+- [x] `token_count` field wired through intercept → session
+- [x] Traces pagination (`?limit=` / `?offset=` on `GET /v1/traces`)
+- [x] `GET /v1/sessions?agent_id=` — list all sessions for an agent
 
 **v0.3**
 - [ ] next.js dashboard — session explorer, policy editor, cost tracker

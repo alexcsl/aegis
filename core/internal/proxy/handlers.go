@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,12 +21,13 @@ import (
 
 // interceptRequest is the body of POST /v1/intercept.
 type interceptRequest struct {
-	SessionID string         `json:"session_id"`
-	AgentID   string         `json:"agent_id"`
-	Tool      string         `json:"tool"`
-	Args      map[string]any `json:"args"`
-	Context   string         `json:"context,omitempty"`
-	CostUSD   float64        `json:"cost_usd,omitempty"`
+	SessionID  string         `json:"session_id"`
+	AgentID    string         `json:"agent_id"`
+	Tool       string         `json:"tool"`
+	Args       map[string]any `json:"args"`
+	Context    string         `json:"context,omitempty"`
+	CostUSD    float64        `json:"cost_usd,omitempty"`
+	TokenCount int            `json:"token_count,omitempty"`
 }
 
 // interceptResponse is what the SDK receives after interception.
@@ -150,6 +152,7 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 	sess.RiskScore = score.Total
 	sess.ToolCallCount++
 	sess.CostUSD += req.CostUSD
+	sess.TokenCount += req.TokenCount
 	go func() {
 		if err := s.store.UpdateSession(bg, sess); err != nil {
 			slog.Error("update session", "session", req.SessionID, "err", err)
@@ -244,12 +247,29 @@ func (s *Server) handleGetTraces(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	traces, err := s.store.GetTraces(r.Context(), sessionID, 100)
+	limit, offset := parsePagination(r, 100, 500)
+	traces, err := s.store.GetTraces(r.Context(), sessionID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "store error")
 		return
 	}
 	writeJSON(w, http.StatusOK, traces)
+}
+
+// handleListSessions returns the most recently active sessions for an agent.
+func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	agentID := r.URL.Query().Get("agent_id")
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id query param required")
+		return
+	}
+	limit, offset := parsePagination(r, 50, 200)
+	sessions, err := s.store.ListSessions(r.Context(), agentID, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	writeJSON(w, http.StatusOK, sessions)
 }
 
 // handleGetDecision lets the SDK poll a deferred decision for its resolution.
@@ -360,6 +380,27 @@ func fireWebhook(ctx context.Context, url string, payload webhookPayload) {
 		return
 	}
 	_ = resp.Body.Close()
+}
+
+// parsePagination reads ?limit= and ?offset= from the request, applying the
+// given defaults and a hard cap on limit to prevent oversized responses.
+func parsePagination(r *http.Request, defaultLimit, maxLimit int) (limit, offset int) {
+	limit = defaultLimit
+	offset = 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	return
 }
 
 // idPattern matches safe opaque identifiers: alphanumeric plus - _ .
