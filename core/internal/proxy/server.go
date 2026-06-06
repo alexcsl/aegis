@@ -34,14 +34,15 @@ func NewServer(addr, apiKey, adminKey string, cfg *policy.Config, db *store.Stor
 	}
 	adminAuth := authMiddleware(adminKey, behindProxy)
 
-	mux.Handle("POST /v1/intercept",      auth(http.HandlerFunc(s.handleIntercept)))
+	json := requireJSON // alias for readability at the call site
+	mux.Handle("POST /v1/intercept",      auth(json(http.HandlerFunc(s.handleIntercept))))
 	mux.Handle("GET /v1/sessions",        auth(http.HandlerFunc(s.handleListSessions)))
 	mux.Handle("GET /v1/session/{id}",    auth(http.HandlerFunc(s.handleGetSession)))
 	mux.Handle("GET /v1/traces",          auth(http.HandlerFunc(s.handleGetTraces)))
 
 	// DEFER: agents poll their own decision; operators resolve/list (admin-authed).
 	mux.Handle("GET /v1/decisions/{id}",          auth(http.HandlerFunc(s.handleGetDecision)))
-	mux.Handle("POST /v1/decisions/{id}/resolve", adminAuth(http.HandlerFunc(s.handleResolveDecision)))
+	mux.Handle("POST /v1/decisions/{id}/resolve", adminAuth(json(http.HandlerFunc(s.handleResolveDecision))))
 	mux.Handle("GET /v1/decisions",               adminAuth(http.HandlerFunc(s.handleListDecisions)))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.store.Ping(r.Context()); err != nil {

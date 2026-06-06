@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -123,6 +124,12 @@ func (cfg *Config) Validate() error {
 		}
 		if p.Decision != "MODIFY" && p.Modify != nil {
 			return fmt.Errorf("policy %q: modify block is only valid with a MODIFY decision", p.Name)
+		}
+		if p.Notify != "" {
+			u, err := url.Parse(p.Notify)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("policy %q: notify must be a valid http or https URL, got %q", p.Name, p.Notify)
+			}
 		}
 	}
 	return nil

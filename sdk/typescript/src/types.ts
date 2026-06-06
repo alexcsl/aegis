@@ -7,6 +7,7 @@ export interface InterceptRequest {
   args: Record<string, unknown>
   context?: string
   cost_usd?: number
+  token_count?: number
 }
 
 export interface InterceptResponse {

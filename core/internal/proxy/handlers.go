@@ -65,6 +65,19 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid agent_id: "+err.Error())
 		return
 	}
+	if err := validateID(req.Tool); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tool name: "+err.Error())
+		return
+	}
+	if req.CostUSD < 0 {
+		writeError(w, http.StatusBadRequest, "cost_usd must be non-negative")
+		return
+	}
+	if req.TokenCount < 0 {
+		writeError(w, http.StatusBadRequest, "token_count must be non-negative")
+		return
+	}
+	req.Context = sanitizeContext(req.Context)
 
 	ctx := r.Context()
 
@@ -100,6 +113,21 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		ToolCallsPerMin:   float64(recentCount),
 		ComputedRiskScore: score.Total,
 	})
+
+	// Emit a structured audit log for decisions that block or hold a call.
+	// Traces capture every call; this surfaces security-relevant events at WARN level
+	// so they appear in log aggregators without requiring DB queries.
+	if dec.Action == "DENY" || dec.Action == "DEFER" {
+		slog.Warn("aegis security event",
+			"event", dec.Action,
+			"session", req.SessionID,
+			"agent", req.AgentID,
+			"tool", req.Tool,
+			"policy", dec.Policy,
+			"reason", dec.Reason,
+			"risk_score", score.Total,
+		)
+	}
 
 	// detach from the request context so background writes survive after the
 	// handler returns (http/2 cancels r.Context() immediately on return)
@@ -281,6 +309,10 @@ func (s *Server) handleGetDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "decision id required")
 		return
 	}
+	if err := validateID(id); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid decision id")
+		return
+	}
 	if agentID == "" {
 		writeError(w, http.StatusBadRequest, "agent_id query param required")
 		return
@@ -308,6 +340,10 @@ func (s *Server) handleResolveDecision(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "decision id required")
+		return
+	}
+	if err := validateID(id); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid decision id")
 		return
 	}
 	var body resolveRequest
@@ -380,6 +416,23 @@ func fireWebhook(ctx context.Context, url string, payload webhookPayload) {
 		return
 	}
 	_ = resp.Body.Close()
+}
+
+// sanitizeContext caps the free-text context/intent field and strips ASCII
+// control characters to prevent log injection and DB surprises.
+const maxContextLen = 1024
+
+func sanitizeContext(s string) string {
+	if len(s) > maxContextLen {
+		s = s[:maxContextLen]
+	}
+	return strings.Map(func(r rune) rune {
+		// Allow printable chars, space, tab, and newline; drop everything else.
+		if r < 32 && r != '\t' && r != '\n' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // parsePagination reads ?limit= and ?offset= from the request, applying the

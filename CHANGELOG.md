@@ -1,5 +1,28 @@
 # changelog
 
+## v0.4.0 (2026-06-06)
+
+### security
+
+- **Tool name validation:** `req.Tool` in `POST /v1/intercept` is now passed through `validateID`. Previously a tool name with newlines or control chars could inject into structured logs and slog output. Returns HTTP 400 on invalid names.
+- **MCP proxy session injection fix:** `handleRPC` in the MCP proxy now checks `sess.AgentID != agentID` after `GetOrCreateSession` and returns a JSON-RPC error. Previously any MCP client could read and pollute another agent's session by supplying a known session ID — the same IDOR that was fixed in the HTTP intercept handler in v0.1.2 was still present in the MCP proxy.
+- **MCP proxy header validation:** `X-Session-ID` and `X-Agent-ID` values supplied by MCP clients are now validated with the same `isValidID` pattern used for HTTP IDs. Invalid chars return a JSON-RPC 400 error before any DB access.
+- **Tool name validated in MCP proxy:** `params.Name` (the MCP tool name) is now validated before use.
+- **Negative `cost_usd` / `token_count` rejected:** A negative `cost_usd` could decrement the session cost counter and bypass cost-cap policies. Both fields now return HTTP 400 if negative.
+- **`context` field capped and sanitised:** The free-text `context`/`initial_intent` field is capped at 1 024 chars and stripped of ASCII control characters (< 0x20 except tab and newline) to prevent log injection.
+- **Content-Type enforcement:** `POST /v1/intercept` and `POST /v1/decisions/:id/resolve` now require `Content-Type: application/json`. Other content types return HTTP 415. Prevents silent zero-value decoding from unexpected body formats.
+- **Path param validation on decision endpoints:** `id` from `GET /v1/decisions/:id` and `POST /v1/decisions/:id/resolve` is validated with `validateID` before any DB query.
+- **`notify` URL validated at startup:** `config.Validate()` now rejects notify webhook URLs that are not valid `http://` or `https://` URLs with a non-empty host, catching misconfigurations before any traffic flows.
+- **MCP proxy server hardened:** `IdleTimeout: 120s` and `MaxHeaderBytes: 64KB` added to the MCP proxy `http.Server`, matching the intercept API server.
+- **Structured security audit logging:** DENY and DEFER decisions now emit a `slog.Warn("aegis security event", ...)` log line with `event`, `session`, `agent`, `tool`, `policy`, `reason`, and `risk_score` fields, making policy violations visible in log aggregators without requiring DB queries.
+
+### sdk
+
+- `AEGIS_ADMIN_KEY` is now wired into `docker-compose.yml` (optional, falls back to `AEGIS_API_KEY` with a startup warning).
+- TypeScript `InterceptRequest` now includes `token_count?: number`.
+
+---
+
 ## v0.3.0 (2026-06-05)
 
 ### features

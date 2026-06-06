@@ -144,10 +144,25 @@ func (p *Proxy) handleRPC(w http.ResponseWriter, r *http.Request) {
 		agentID = "mcp-client"
 	}
 
+	// Validate caller-supplied IDs to prevent log injection and unexpected chars in DB.
+	if !isValidID(sessionID) || !isValidID(agentID) {
+		writeRPCError(w, req.ID, -32600, "invalid X-Session-ID or X-Agent-ID header")
+		return
+	}
+	if !isValidID(params.Name) {
+		writeRPCError(w, req.ID, -32602, "invalid tool name")
+		return
+	}
+
 	sess, err := p.store.GetOrCreateSession(ctx, sessionID, agentID, "")
 	if err != nil {
 		slog.Error("mcp: get session", "err", err)
 		writeRPCError(w, req.ID, -32603, "internal error")
+		return
+	}
+	// Reject cross-agent session access — same protection as the intercept API.
+	if sess.AgentID != agentID {
+		writeRPCError(w, req.ID, -32600, "session belongs to a different agent")
 		return
 	}
 
@@ -268,6 +283,21 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, body []byte) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
+// isValidID reports whether s is a safe opaque identifier: 1–128 alphanumeric
+// chars plus underscore, dash, and dot. Mirrors validateID in the proxy package.
+func isValidID(s string) bool {
+	if s == "" || len(s) > 128 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 func writeRPCError(w http.ResponseWriter, id any, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK) // JSON-RPC errors always use HTTP 200
@@ -281,10 +311,12 @@ func writeRPCError(w http.ResponseWriter, id any, code int, msg string) {
 // ListenAndServe starts the MCP proxy on addr. It blocks until ctx is cancelled.
 func (p *Proxy) ListenAndServe(ctx context.Context, addr string) error {
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      p.Handler(),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:           addr,
+		Handler:        p.Handler(),
+		ReadTimeout:    10 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 16, // 64 KB
 	}
 
 	errCh := make(chan error, 1)
