@@ -25,6 +25,10 @@ type EvalRequest struct {
 	// ComputedRiskScore is the freshly computed score for this call.
 	// Use this rather than Session.RiskScore, which reflects the previous call.
 	ComputedRiskScore float64
+	// TokenCount is the session's accumulated token count, for token_count triggers.
+	TokenCount float64
+	// ToolCallCount is the session's accumulated tool call count, for tool_call_count triggers.
+	ToolCallCount float64
 }
 
 // Evaluator evaluates policies in order and returns the first match.
@@ -80,6 +84,24 @@ func (e *Evaluator) matches(t Trigger, req EvalRequest) bool {
 			return false
 		}
 		if !t.SessionCostUSD.Matches(req.Session.CostUSD) {
+			return false
+		}
+	}
+
+	if t.TokenCount != nil {
+		if req.Session == nil {
+			return false
+		}
+		if !t.TokenCount.Matches(req.TokenCount) {
+			return false
+		}
+	}
+
+	if t.ToolCallCount != nil {
+		if req.Session == nil {
+			return false
+		}
+		if !t.ToolCallCount.Matches(req.ToolCallCount) {
 			return false
 		}
 	}

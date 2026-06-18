@@ -44,11 +44,23 @@ func TestCostSignal(t *testing.T) {
 }
 
 func TestSensitivitySignal(t *testing.T) {
-	if sensitivitySignal("delete_file") != 0.8 {
-		t.Error("expected 0.8 for delete_file")
+	def := ScoringConfig{}
+	if sensitivitySignal("delete_file", def) != 0.8 {
+		t.Error("expected 0.8 for delete_file with default config")
 	}
-	if sensitivitySignal("search_web") != 0 {
-		t.Error("expected 0 for search_web")
+	if sensitivitySignal("search_web", def) != 0 {
+		t.Error("expected 0 for search_web with default config")
+	}
+
+	custom := ScoringConfig{
+		SensitiveTools: map[string]bool{"my_tool": true},
+		SensitiveScore: 0.5,
+	}
+	if sensitivitySignal("my_tool", custom) != 0.5 {
+		t.Error("expected 0.5 for my_tool with custom config")
+	}
+	if sensitivitySignal("delete_file", custom) != 0 {
+		t.Error("expected 0 for delete_file when overridden by custom set")
 	}
 }
 
@@ -80,7 +92,7 @@ func TestEscalationSignal(t *testing.T) {
 }
 
 func TestComputeNilSession(t *testing.T) {
-	score := Compute(nil, nil, "search_web", 0)
+	score := Compute(nil, nil, "search_web", 0, ScoringConfig{})
 	if score.Total != 0 {
 		t.Errorf("expected 0 score for nil session, got %v", score.Total)
 	}
@@ -93,7 +105,7 @@ func TestComputeClampsAt1(t *testing.T) {
 	for i := range burst {
 		burst[i] = store.ToolCall{Timestamp: now.Add(-time.Duration(i) * time.Second)}
 	}
-	score := Compute(sess, burst, "delete_file", 60)
+	score := Compute(sess, burst, "delete_file", 60, ScoringConfig{})
 	if score.Total > 1.0 {
 		t.Errorf("score.Total %v exceeds 1.0", score.Total)
 	}

@@ -105,13 +105,18 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	score := scorer.Compute(sess, history, req.Tool, recentCount)
+	live := s.live.Load()
+	score := scorer.Compute(sess, history, req.Tool, recentCount, live.scoring)
 
-	dec := s.evaluator.Evaluate(policy.EvalRequest{
+	dec := live.eval.Evaluate(policy.EvalRequest{
 		Tool:              req.Tool,
 		Session:           sess,
 		ToolCallsPerMin:   float64(recentCount),
 		ComputedRiskScore: score.Total,
+		// Use post-call values so triggers fire on the call that crosses the threshold,
+		// consistent with how ComputedRiskScore is computed fresh for this call.
+		TokenCount:    float64(sess.TokenCount) + float64(req.TokenCount),
+		ToolCallCount: float64(sess.ToolCallCount) + 1,
 	})
 
 	// Emit a structured audit log for decisions that block or hold a call.
@@ -165,7 +170,7 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.DecisionID = decisionID
 		if dec.Notify != "" {
-			go fireWebhook(bg, dec.Notify, webhookPayload{
+			payload := webhookPayload{
 				Event:      "decision.deferred",
 				DecisionID: decisionID,
 				SessionID:  req.SessionID,
@@ -173,7 +178,12 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 				Tool:       req.Tool,
 				Reason:     dec.Reason,
 				Policy:     dec.Policy,
-			})
+			}
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				fireWebhook(ctx, dec.Notify, payload)
+			}()
 		}
 	}
 
@@ -398,24 +408,62 @@ type webhookPayload struct {
 // config (not user input), so this is not a user-controlled SSRF surface.
 var webhookClient = &http.Client{Timeout: 5 * time.Second}
 
-// fireWebhook POSTs payload to url on a best-effort basis. Failures are logged, not retried.
-func fireWebhook(ctx context.Context, url string, payload webhookPayload) {
+// fireWebhook POSTs payload to url, retrying up to 3 times with exponential backoff
+// on network errors or 5xx responses. 4xx responses are not retried (misconfiguration).
+func fireWebhook(parentCtx context.Context, url string, payload webhookPayload) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	backoff := time.Second
+	for attempt := 1; attempt <= 3; attempt++ {
+		req, err := http.NewRequestWithContext(parentCtx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			slog.Error("webhook build", "url", url, "err", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := webhookClient.Do(req)
+		if err == nil && resp.StatusCode < 500 {
+			_ = resp.Body.Close()
+			return
+		}
+		if resp != nil {
+			slog.Warn("webhook attempt failed", "url", url, "attempt", attempt, "status", resp.StatusCode)
+			_ = resp.Body.Close()
+		} else {
+			slog.Warn("webhook attempt failed", "url", url, "attempt", attempt, "err", err)
+		}
+		if attempt < 3 {
+			t := time.NewTimer(backoff)
+			select {
+			case <-parentCtx.Done():
+				t.Stop()
+				return
+			case <-t.C:
+			}
+			backoff *= 2
+		}
+	}
+	slog.Error("webhook delivery failed after 3 attempts", "url", url)
+}
+
+// handleMetrics returns aggregated statistics over a time window (admin-authed).
+// Accepts ?hours=N (default 24, max 168). Useful for monitoring without DB access.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	hours := 24
+	if v := r.URL.Query().Get("hours"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 168 {
+			hours = n
+		}
+	}
+	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	m, err := s.store.GetMetrics(r.Context(), since, hours)
 	if err != nil {
-		slog.Error("webhook build", "url", url, "err", err)
+		writeError(w, http.StatusInternalServerError, "store error")
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := webhookClient.Do(req)
-	if err != nil {
-		slog.Error("webhook deliver", "url", url, "err", err)
-		return
-	}
-	_ = resp.Body.Close()
+	writeJSON(w, http.StatusOK, m)
 }
 
 // sanitizeContext caps the free-text context/intent field and strips ASCII

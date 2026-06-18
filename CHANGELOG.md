@@ -1,5 +1,39 @@
 # changelog
 
+## v0.5.0 (2026-06-18)
+
+### features
+
+- **Configurable sensitive tools:** The sensitivity scorer signal is no longer hardcoded. Add a `scoring:` block to `aegis.config.yaml` to define your own list of high-risk tools and optionally override the signal score (default 0.8). When `scoring.sensitive_tools` is empty, the built-in defaults are used — fully backwards-compatible.
+  ```yaml
+  scoring:
+    sensitive_tools:
+      - execute_sql
+      - delete_file
+      - my_custom_tool
+    sensitive_tool_score: 0.8
+  ```
+- **New policy triggers — `token_count` and `tool_call_count`:** Both counters have been tracked in the DB since v0.1 but could not trigger policies. They can now be used in any trigger block just like `session_cost_usd`.
+  ```yaml
+  - name: cap-token-budget
+    trigger:
+      token_count:
+        gt: 500000
+    decision: DENY
+    reason: session token budget exceeded
+  ```
+- **`GET /v1/metrics` endpoint (admin-authed):** Returns aggregated statistics for a configurable time window (`?hours=N`, default 24, max 168). Fields: `active_sessions`, `total_decisions`, `decisions` (breakdown by type), `avg_risk_score`, `top_tools` (top 10 by call count), `top_policies` (top 10 triggered policies). Useful for monitoring and alerting without direct DB access.
+- **SIGHUP config hot-reload:** Send `SIGHUP` to a running `aegis serve` or `aegis proxy` process to reload `aegis.config.yaml` without downtime. The new config is validated before swapping — if it is invalid, the old config stays active and an error is logged. The evaluator and scoring config are replaced atomically using `sync/atomic.Pointer`.
+- **Webhook retry with exponential backoff:** `fireWebhook` (called on DEFER) now retries up to 3 times on network errors or 5xx responses, with 1s / 2s / 4s backoff. 4xx responses are not retried (operator misconfiguration). Failures after 3 attempts are logged at `slog.Error`.
+
+### improvements
+
+- `mcp.NewProxy` now accepts `*policy.Config` instead of `*policy.Evaluator`, matching `proxy.NewServer` and enabling config hot-reload on the MCP proxy.
+- `scorer.DefaultSensitiveTools` is now an exported variable, accessible for inspection and testing.
+- 6 new tests: configurable sensitivity signal (custom set, custom score, fallback), `token_count` trigger (with session, nil session), `tool_call_count` trigger (with session, nil session).
+
+---
+
 ## v0.4.0 (2026-06-06)
 
 ### security

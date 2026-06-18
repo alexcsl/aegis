@@ -210,3 +210,43 @@ func TestEvaluateDefaultDecisionAllowIsBackwardsCompatible(t *testing.T) {
 		t.Errorf("empty DefaultDecision should default to ALLOW, got %s", d.Action)
 	}
 }
+
+func TestEvaluateTokenCountTrigger(t *testing.T) {
+	e := NewEvaluator(cfg(Policy{
+		Name:     "token-cap",
+		Trigger:  Trigger{TokenCount: &Condition{Gt: ptr(500000)}},
+		Decision: "DENY",
+		Reason:   "token budget exceeded",
+	}))
+
+	rich := &store.Session{}
+	if d := e.Evaluate(EvalRequest{Tool: "x", Session: rich, TokenCount: 600000}); d.Action != "DENY" {
+		t.Errorf("expected DENY at 600k tokens, got %s", d.Action)
+	}
+	if d := e.Evaluate(EvalRequest{Tool: "x", Session: rich, TokenCount: 100000}); d.Action != "ALLOW" {
+		t.Errorf("expected ALLOW at 100k tokens, got %s", d.Action)
+	}
+	if d := e.Evaluate(EvalRequest{Tool: "x", Session: nil, TokenCount: 600000}); d.Action != "ALLOW" {
+		t.Errorf("nil session should not match token_count trigger, got %s", d.Action)
+	}
+}
+
+func TestEvaluateToolCallCountTrigger(t *testing.T) {
+	e := NewEvaluator(cfg(Policy{
+		Name:     "call-cap",
+		Trigger:  Trigger{ToolCallCount: &Condition{Gte: ptr(100.0)}},
+		Decision: "DEFER",
+		Reason:   "high call volume",
+	}))
+
+	sess := &store.Session{}
+	if d := e.Evaluate(EvalRequest{Tool: "x", Session: sess, ToolCallCount: 100}); d.Action != "DEFER" {
+		t.Errorf("expected DEFER at 100 calls, got %s", d.Action)
+	}
+	if d := e.Evaluate(EvalRequest{Tool: "x", Session: sess, ToolCallCount: 50}); d.Action != "ALLOW" {
+		t.Errorf("expected ALLOW at 50 calls, got %s", d.Action)
+	}
+	if d := e.Evaluate(EvalRequest{Tool: "x", Session: nil, ToolCallCount: 100}); d.Action != "ALLOW" {
+		t.Errorf("nil session should not match tool_call_count trigger, got %s", d.Action)
+	}
+}

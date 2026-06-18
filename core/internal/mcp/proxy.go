@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,17 +57,37 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+// mcpLiveCfg holds the hot-swappable parts of the MCP proxy configuration.
+type mcpLiveCfg struct {
+	eval    *policy.Evaluator
+	scoring scorer.ScoringConfig
+}
+
+func newMCPLiveCfg(cfg *policy.Config) *mcpLiveCfg {
+	sc := scorer.ScoringConfig{SensitiveScore: cfg.Scoring.SensitiveToolScore}
+	if len(cfg.Scoring.SensitiveTools) > 0 {
+		sc.SensitiveTools = make(map[string]bool, len(cfg.Scoring.SensitiveTools))
+		for _, t := range cfg.Scoring.SensitiveTools {
+			sc.SensitiveTools[t] = true
+		}
+	}
+	return &mcpLiveCfg{
+		eval:    policy.NewEvaluator(cfg),
+		scoring: sc,
+	}
+}
+
 // Proxy sits in front of an MCP server and enforces Aegis policies.
 type Proxy struct {
-	upstream      *url.URL
-	hashedAPIKey  []byte
-	store         *store.Store
-	evaluator     *policy.Evaluator
-	client        *http.Client
+	upstream     *url.URL
+	hashedAPIKey []byte
+	store        *store.Store
+	live         atomic.Pointer[mcpLiveCfg]
+	client       *http.Client
 }
 
 // NewProxy creates a Proxy that forwards approved calls to upstream.
-func NewProxy(upstream, apiKey string, db *store.Store, eval *policy.Evaluator) (*Proxy, error) {
+func NewProxy(upstream, apiKey string, db *store.Store, cfg *policy.Config) (*Proxy, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("api key is required for the mcp proxy")
 	}
@@ -75,13 +96,20 @@ func NewProxy(upstream, apiKey string, db *store.Store, eval *policy.Evaluator) 
 		return nil, fmt.Errorf("invalid upstream url: %w", err)
 	}
 	h := sha256.Sum256([]byte(apiKey))
-	return &Proxy{
+	p := &Proxy{
 		upstream:     u,
 		hashedAPIKey: h[:],
 		store:        db,
-		evaluator:    eval,
 		client:       &http.Client{Timeout: 30 * time.Second},
-	}, nil
+	}
+	p.live.Store(newMCPLiveCfg(cfg))
+	return p, nil
+}
+
+// SetConfig atomically replaces the evaluator and scoring config.
+// Safe to call concurrently with in-flight requests.
+func (p *Proxy) SetConfig(cfg *policy.Config) {
+	p.live.Store(newMCPLiveCfg(cfg))
 }
 
 // Handler returns an http.Handler that proxies MCP requests.
@@ -178,13 +206,16 @@ func (p *Proxy) handleRPC(w http.ResponseWriter, r *http.Request) {
 		// non-fatal: escalation signal will be 0
 	}
 
-	score := scorer.Compute(sess, history, params.Name, recentCount)
+	live := p.live.Load()
+	score := scorer.Compute(sess, history, params.Name, recentCount, live.scoring)
 
-	dec := p.evaluator.Evaluate(policy.EvalRequest{
+	dec := live.eval.Evaluate(policy.EvalRequest{
 		Tool:              params.Name,
 		Session:           sess,
 		ToolCallsPerMin:   float64(recentCount),
 		ComputedRiskScore: score.Total,
+		// +1 so the trigger fires on the call that crosses the threshold.
+		ToolCallCount: float64(sess.ToolCallCount) + 1,
 	})
 
 	slog.Info("mcp intercept",

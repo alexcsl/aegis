@@ -429,3 +429,87 @@ func (s *Store) PruneExpiredSessions(ctx context.Context, maxAge time.Duration) 
 	}
 	return result.RowsAffected(), nil
 }
+
+// GetMetrics returns aggregated statistics for the window starting at since.
+// hours is stored on the result for the caller's convenience; it is not used in queries.
+func (s *Store) GetMetrics(ctx context.Context, since time.Time, hours int) (*Metrics, error) {
+	m := &Metrics{
+		PeriodHours: hours,
+		Decisions:   make(map[string]int),
+	}
+
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM sessions WHERE updated_at >= $1`, since,
+	).Scan(&m.ActiveSessions); err != nil {
+		return nil, fmt.Errorf("metrics active sessions: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT decision, COUNT(*) FROM tool_calls WHERE timestamp >= $1 GROUP BY decision`, since)
+	if err != nil {
+		return nil, fmt.Errorf("metrics decisions: %w", err)
+	}
+	for rows.Next() {
+		var dec string
+		var cnt int
+		if err := rows.Scan(&dec, &cnt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		m.Decisions[dec] = cnt
+		m.TotalDecisions += cnt
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var avg *float64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT AVG(risk_score) FROM sessions WHERE updated_at >= $1`, since,
+	).Scan(&avg); err != nil {
+		return nil, fmt.Errorf("metrics avg risk: %w", err)
+	}
+	if avg != nil {
+		m.AvgRiskScore = *avg
+	}
+
+	rows, err = s.pool.Query(ctx, `
+		SELECT tool, COUNT(*) AS cnt FROM tool_calls WHERE timestamp >= $1
+		GROUP BY tool ORDER BY cnt DESC LIMIT 10
+	`, since)
+	if err != nil {
+		return nil, fmt.Errorf("metrics top tools: %w", err)
+	}
+	for rows.Next() {
+		var tc ToolCount
+		if err := rows.Scan(&tc.Tool, &tc.Count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		m.TopTools = append(m.TopTools, tc)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	rows, err = s.pool.Query(ctx, `
+		SELECT policy_triggered, COUNT(*) AS cnt FROM traces
+		WHERE timestamp >= $1 AND policy_triggered IS NOT NULL AND policy_triggered != ''
+		GROUP BY policy_triggered ORDER BY cnt DESC LIMIT 10
+	`, since)
+	if err != nil {
+		return nil, fmt.Errorf("metrics top policies: %w", err)
+	}
+	for rows.Next() {
+		var pc PolicyCount
+		if err := rows.Scan(&pc.Policy, &pc.Count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		m.TopPolicies = append(m.TopPolicies, pc)
+	}
+	rows.Close()
+	return m, rows.Err()
+}

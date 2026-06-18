@@ -2,6 +2,27 @@ package store
 
 import "time"
 
+// Metrics holds aggregated statistics over a time window.
+type Metrics struct {
+	PeriodHours    int            `json:"period_hours"`
+	ActiveSessions int            `json:"active_sessions"`
+	TotalDecisions int            `json:"total_decisions"`
+	Decisions      map[string]int `json:"decisions"`
+	AvgRiskScore   float64        `json:"avg_risk_score"`
+	TopTools       []ToolCount    `json:"top_tools"`
+	TopPolicies    []PolicyCount  `json:"top_policies"`
+}
+
+type ToolCount struct {
+	Tool  string `json:"tool"`
+	Count int    `json:"count"`
+}
+
+type PolicyCount struct {
+	Policy string `json:"policy"`
+	Count  int    `json:"count"`
+}
+
 type Session struct {
 	ID            string    `json:"session_id"`
 	AgentID       string    `json:"agent_id"`

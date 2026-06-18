@@ -4,28 +4,52 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/aegis-ai/aegis/internal/policy"
+	"github.com/aegis-ai/aegis/internal/scorer"
 	"github.com/aegis-ai/aegis/internal/store"
 )
 
+// liveCfg holds the hot-swappable parts of the server configuration.
+// Replaced atomically on SIGHUP reload.
+type liveCfg struct {
+	eval    *policy.Evaluator
+	scoring scorer.ScoringConfig
+}
+
+// newLiveCfg builds a liveCfg from a loaded policy config.
+func newLiveCfg(cfg *policy.Config) *liveCfg {
+	sc := scorer.ScoringConfig{SensitiveScore: cfg.Scoring.SensitiveToolScore}
+	if len(cfg.Scoring.SensitiveTools) > 0 {
+		sc.SensitiveTools = make(map[string]bool, len(cfg.Scoring.SensitiveTools))
+		for _, t := range cfg.Scoring.SensitiveTools {
+			sc.SensitiveTools[t] = true
+		}
+	}
+	return &liveCfg{
+		eval:    policy.NewEvaluator(cfg),
+		scoring: sc,
+	}
+}
+
 // Server is the aegis intercept API.
 type Server struct {
-	addr      string
-	store     *store.Store
-	evaluator *policy.Evaluator
-	httpSrv   *http.Server
+	addr    string
+	store   *store.Store
+	live    atomic.Pointer[liveCfg]
+	httpSrv *http.Server
 }
 
 // NewServer creates a Server but does not start listening.
 // adminKey guards the decision resolve/list endpoints; pass "" to reuse apiKey.
 func NewServer(addr, apiKey, adminKey string, cfg *policy.Config, db *store.Store, behindProxy bool) *Server {
 	s := &Server{
-		addr:      addr,
-		store:     db,
-		evaluator: policy.NewEvaluator(cfg),
+		addr:  addr,
+		store: db,
 	}
+	s.live.Store(newLiveCfg(cfg))
 
 	mux := http.NewServeMux()
 	auth := authMiddleware(apiKey, behindProxy)
@@ -39,6 +63,7 @@ func NewServer(addr, apiKey, adminKey string, cfg *policy.Config, db *store.Stor
 	mux.Handle("GET /v1/sessions",        auth(http.HandlerFunc(s.handleListSessions)))
 	mux.Handle("GET /v1/session/{id}",    auth(http.HandlerFunc(s.handleGetSession)))
 	mux.Handle("GET /v1/traces",          auth(http.HandlerFunc(s.handleGetTraces)))
+	mux.Handle("GET /v1/metrics",         adminAuth(http.HandlerFunc(s.handleMetrics)))
 
 	// DEFER: agents poll their own decision; operators resolve/list (admin-authed).
 	mux.Handle("GET /v1/decisions/{id}",          auth(http.HandlerFunc(s.handleGetDecision)))
@@ -61,6 +86,12 @@ func NewServer(addr, apiKey, adminKey string, cfg *policy.Config, db *store.Stor
 		MaxHeaderBytes: 1 << 16, // 64 KB
 	}
 	return s
+}
+
+// SetConfig atomically replaces the evaluator and scoring config.
+// Safe to call concurrently with in-flight requests.
+func (s *Server) SetConfig(cfg *policy.Config) {
+	s.live.Store(newLiveCfg(cfg))
 }
 
 // Start runs the server until ctx is cancelled, then shuts down gracefully.

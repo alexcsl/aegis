@@ -8,6 +8,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Scoring holds tunable parameters for the risk scoring engine.
+// If left empty, built-in defaults are used (see scorer.DefaultSensitiveTools).
+type Scoring struct {
+	// SensitiveTools overrides the built-in list of high-risk tool names.
+	// When non-empty, only these tools raise the sensitivity signal.
+	SensitiveTools []string `yaml:"sensitive_tools,omitempty"`
+	// SensitiveToolScore is the sensitivity signal value for matched tools (default 0.8).
+	SensitiveToolScore float64 `yaml:"sensitive_tool_score,omitempty"`
+}
+
 // Config holds the parsed aegis.config.yaml.
 type Config struct {
 	Version         int      `yaml:"version"`
@@ -15,7 +25,8 @@ type Config struct {
 	// DefaultDecision is returned when no policy matches.
 	// Accepted values: "ALLOW" (default) or "DENY".
 	// Set to "DENY" for an allowlist posture where only explicitly approved tools pass.
-	DefaultDecision string   `yaml:"default_decision,omitempty"`
+	DefaultDecision string  `yaml:"default_decision,omitempty"`
+	Scoring         Scoring `yaml:"scoring,omitempty"`
 }
 
 // Policy is a single rule: when trigger matches, apply decision.
@@ -74,6 +85,8 @@ type Trigger struct {
 	ToolCallsPerMinute *Condition `yaml:"tool_calls_per_minute,omitempty"`
 	SessionCostUSD     *Condition `yaml:"session_cost_usd,omitempty"`
 	RiskScore          *Condition `yaml:"risk_score,omitempty"`
+	TokenCount         *Condition `yaml:"token_count,omitempty"`
+	ToolCallCount      *Condition `yaml:"tool_call_count,omitempty"`
 }
 
 // Condition is a numeric comparison (gt, gte, lt, lte).
@@ -110,6 +123,10 @@ func (cfg *Config) Validate() error {
 	validDefault := map[string]bool{"": true, "ALLOW": true, "DENY": true}
 	if !validDefault[cfg.DefaultDecision] {
 		return fmt.Errorf("invalid default_decision %q: must be ALLOW or DENY", cfg.DefaultDecision)
+	}
+	s := cfg.Scoring.SensitiveToolScore
+	if s != 0 && (s < 0 || s > 1) {
+		return fmt.Errorf("scoring.sensitive_tool_score must be between 0.0 and 1.0, got %v", s)
 	}
 	validDecision := map[string]bool{"ALLOW": true, "DENY": true, "DEFER": true, "MODIFY": true}
 	for i, p := range cfg.Policies {

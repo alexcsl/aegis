@@ -76,6 +76,30 @@ func runServe(args []string) {
 	// prune expired sessions on a background ticker
 	go runPruner(ctx, db, *sessionTTL)
 
+	// SIGHUP reloads aegis.config.yaml without restarting the process.
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGHUP)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ch:
+				newCfg, err := policy.LoadConfig(*cfgPath)
+				if err != nil {
+					slog.Error("sighup: load config failed", "err", err)
+					continue
+				}
+				if err := newCfg.Validate(); err != nil {
+					slog.Error("sighup: config invalid", "err", err)
+					continue
+				}
+				srv.SetConfig(newCfg)
+				slog.Info("config reloaded", "path", *cfgPath)
+			}
+		}
+	}()
+
 	if err := srv.Start(ctx); err != nil {
 		log.Fatal(err)
 	}
@@ -97,16 +121,43 @@ func runProxy(args []string) {
 	cfg, db := bootstrap(*cfgPath, *dbURL)
 	defer db.Close()
 
-	p, err := mcp.NewProxy(*upstream, *apiKey, db, policy.NewEvaluator(cfg))
+	p, err := mcp.NewProxy(*upstream, *apiKey, db, cfg)
 	if err != nil {
 		log.Fatalf("create mcp proxy: %v", err)
 	}
 
 	addr := ":" + *port
 	slog.Info("aegis proxy", "addr", addr, "upstream", *upstream)
-	runUntilSignal(func(ctx context.Context) error {
-		return p.ListenAndServe(ctx, addr)
-	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGHUP)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ch:
+				newCfg, err := policy.LoadConfig(*cfgPath)
+				if err != nil {
+					slog.Error("sighup: load config failed", "err", err)
+					continue
+				}
+				if err := newCfg.Validate(); err != nil {
+					slog.Error("sighup: config invalid", "err", err)
+					continue
+				}
+				p.SetConfig(newCfg)
+				slog.Info("config reloaded", "path", *cfgPath)
+			}
+		}
+	}()
+
+	if err := p.ListenAndServe(ctx, addr); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func bootstrap(cfgPath, dbURL string) (*policy.Config, *store.Store) {
@@ -178,8 +229,9 @@ func warnWeakKey(key string) {
 }
 
 // isLoopback reports whether addr is bound to a loopback interface only.
+// Addresses that bind all interfaces (0.0.0.0, ::) are not loopback.
 func isLoopback(addr string) bool {
-	loopbacks := []string{"127.", "localhost:", "[::1]"}
+	loopbacks := []string{"127.", "localhost:", "[::1]:"}
 	for _, prefix := range loopbacks {
 		if strings.HasPrefix(addr, prefix) {
 			return true
