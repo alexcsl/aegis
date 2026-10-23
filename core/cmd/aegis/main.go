@@ -41,7 +41,7 @@ func runServe(args []string) {
 	dbURL       := fs.String("db",           os.Getenv("DATABASE_URL"),    "postgres connection string")
 	apiKey      := fs.String("key",          os.Getenv("AEGIS_API_KEY"),   "api key (X-Aegis-Key)")
 	cfgPath     := fs.String("config",       "aegis.config.yaml",          "path to policy config")
-	adminKey    := fs.String("admin-key",    os.Getenv("AEGIS_ADMIN_KEY"), "separate key for DEFER resolve/list endpoints (X-Aegis-Key)")
+	adminKey    := fs.String("admin-key",    os.Getenv("AEGIS_ADMIN_KEY"), "separate administrator key for approvals, listings, and metrics (X-Aegis-Key)")
 	behindProxy := fs.Bool("behind-proxy",   false,                         "set when a TLS-terminating reverse proxy is in front of aegis")
 	sessionTTL  := fs.Duration("session-ttl", 24*time.Hour,                "how long to keep idle sessions")
 	_ = fs.Parse(args)
@@ -49,8 +49,8 @@ func runServe(args []string) {
 	requireNonEmpty("DATABASE_URL / --db", *dbURL)
 	requireNonEmpty("AEGIS_API_KEY / --key", *apiKey)
 	warnWeakKey(*apiKey)
-	if *adminKey == "" {
-		slog.Warn("no admin key set — DEFER approvals share AEGIS_API_KEY, so an agent holding it can approve its own deferred calls. Set AEGIS_ADMIN_KEY / --admin-key to separate operator approval from agents.")
+	if *adminKey == "" || *adminKey == *apiKey {
+		slog.Warn("administrator operations disabled: set AEGIS_ADMIN_KEY / --admin-key to a nonempty value different from AEGIS_API_KEY")
 	}
 
 	// Refuse to bind on a non-loopback address without an explicit acknowledgement

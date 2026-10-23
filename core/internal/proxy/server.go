@@ -43,7 +43,7 @@ type Server struct {
 }
 
 // NewServer creates a Server but does not start listening.
-// adminKey guards the decision resolve/list endpoints; pass "" to reuse apiKey.
+// adminKey must differ from apiKey; otherwise administrator endpoints are disabled.
 func NewServer(addr, apiKey, adminKey string, cfg *policy.Config, db *store.Store, behindProxy bool) *Server {
 	s := &Server{
 		addr:  addr,
@@ -53,10 +53,14 @@ func NewServer(addr, apiKey, adminKey string, cfg *policy.Config, db *store.Stor
 
 	mux := http.NewServeMux()
 	auth := authMiddleware(apiKey, behindProxy)
-	if adminKey == "" {
-		adminKey = apiKey
-	}
 	adminAuth := authMiddleware(adminKey, behindProxy)
+	if adminKey == "" || adminKey == apiKey {
+		adminAuth = func(http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeError(w, http.StatusServiceUnavailable, "administrator operations require a separate AEGIS_ADMIN_KEY")
+			})
+		}
+	}
 
 	json := requireJSON // alias for readability at the call site
 	mux.Handle("POST /v1/intercept",      auth(json(http.HandlerFunc(s.handleIntercept))))

@@ -182,28 +182,32 @@ func (p *Proxy) handleRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := p.store.GetOrCreateSession(ctx, sessionID, agentID, "")
+	tx, err := p.store.BeginSession(ctx, sessionID, agentID, "")
 	if err != nil {
 		slog.Error("mcp: get session", "err", err)
 		writeRPCError(w, req.ID, -32603, "internal error")
 		return
 	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	sess := tx.Session
 	// Reject cross-agent session access — same protection as the intercept API.
 	if sess.AgentID != agentID {
 		writeRPCError(w, req.ID, -32600, "session belongs to a different agent")
 		return
 	}
 
-	recentCount, err := p.store.CountRecentCalls(ctx, sessionID, time.Minute)
+	recentCount, err := tx.Store.CountRecentCalls(ctx, sessionID, time.Minute)
 	if err != nil {
 		slog.Error("mcp: count recent calls", "err", err)
-		// non-fatal: rate signal will be 0
+		writeRPCError(w, req.ID, -32603, "policy state unavailable")
+		return
 	}
 
-	history, err := p.store.GetToolCallHistory(ctx, sessionID, 20)
+	history, err := tx.Store.GetToolCallHistory(ctx, sessionID, 20)
 	if err != nil {
 		slog.Error("mcp: get history", "err", err)
-		// non-fatal: escalation signal will be 0
+		writeRPCError(w, req.ID, -32603, "policy state unavailable")
+		return
 	}
 
 	live := p.live.Load()
@@ -225,30 +229,34 @@ func (p *Proxy) handleRPC(w http.ResponseWriter, r *http.Request) {
 		"risk", score.Total,
 	)
 
-	bg := context.WithoutCancel(ctx)
+	sess.RiskScore = score.Total
+	sess.ToolCallCount++
+	if err := tx.Store.UpdateSession(ctx, sess); err != nil {
+		slog.Error("mcp: update session", "err", err)
+		writeRPCError(w, req.ID, -32603, "could not record policy state")
+		return
+	}
+	if err := tx.Store.AppendToolCall(ctx, sessionID, store.ToolCall{
+		Tool: params.Name, Decision: dec.Action, Timestamp: time.Now(),
+	}); err != nil {
+		slog.Error("mcp: append tool call", "err", err)
+		writeRPCError(w, req.ID, -32603, "could not record policy state")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("mcp: commit interception", "err", err)
+		writeRPCError(w, req.ID, -32603, "could not commit policy state")
+		return
+	}
 
 	switch dec.Action {
 	case "DENY":
 		writeRPCError(w, req.ID, -32603, fmt.Sprintf("denied by policy %q: %s", dec.Policy, dec.Reason))
-		go func() {
-			if err := p.store.AppendToolCall(bg, sessionID, store.ToolCall{
-				Tool: params.Name, Decision: "DENY", Timestamp: time.Now(),
-			}); err != nil {
-				slog.Error("mcp: append tool call", "err", err)
-			}
-		}()
 		return
 	case "DEFER":
 		// The mcp proxy is synchronous json-rpc with no polling channel, so a
 		// deferred call cannot wait for human approval here — fail closed.
 		writeRPCError(w, req.ID, -32603, fmt.Sprintf("call deferred by policy %q for human approval; DEFER is not supported over the mcp proxy — use the SDK", dec.Policy))
-		go func() {
-			if err := p.store.AppendToolCall(bg, sessionID, store.ToolCall{
-				Tool: params.Name, Decision: "DEFER", Timestamp: time.Now(),
-			}); err != nil {
-				slog.Error("mcp: append tool call", "err", err)
-			}
-		}()
 		return
 	case "MODIFY":
 		// Rewrite the tool arguments in place, then forward the modified request.
@@ -264,21 +272,6 @@ func (p *Proxy) handleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.forward(w, r, body)
-
-	sess.RiskScore = score.Total
-	sess.ToolCallCount++
-	go func() {
-		if err := p.store.UpdateSession(bg, sess); err != nil {
-			slog.Error("mcp: update session", "err", err)
-		}
-	}()
-	go func() {
-		if err := p.store.AppendToolCall(bg, sessionID, store.ToolCall{
-			Tool: params.Name, Decision: dec.Action, Timestamp: time.Now(),
-		}); err != nil {
-			slog.Error("mcp: append tool call", "err", err)
-		}
-	}()
 }
 
 // forward proxies the raw body to the upstream, stripping hop-by-hop headers.

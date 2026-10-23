@@ -27,7 +27,7 @@ services:
       AEGIS_API_KEY: ${AEGIS_API_KEY:?AEGIS_API_KEY is required}
       # AEGIS_ADMIN_KEY guards the DEFER approve/reject endpoints so agents cannot
       # approve their own deferred calls. Set to a different value than AEGIS_API_KEY.
-      # Falls back to AEGIS_API_KEY if unset (a startup warning is logged).
+      # Admin operations are disabled if this is unset or equals AEGIS_API_KEY.
       AEGIS_ADMIN_KEY: ${AEGIS_ADMIN_KEY:-}
       AEGIS_ADDR: ":8080"
     ports:
