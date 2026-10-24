@@ -7,12 +7,50 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Store wraps a postgres connection pool.
 type Store struct {
-	pool *pgxpool.Pool
+	pool database
+	root *pgxpool.Pool
+}
+
+type database interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Begin(context.Context) (pgx.Tx, error)
+}
+
+type SessionTransaction struct {
+	Store   *Store
+	Session *Session
+	tx      pgx.Tx
+}
+
+// BeginSession locks one session until its evaluation and policy state commit.
+func (s *Store) BeginSession(ctx context.Context, sessionID, agentID, intent string) (*SessionTransaction, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	scoped := &Store{pool: tx}
+	sess, err := scoped.GetOrCreateSession(ctx, sessionID, agentID, intent)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	return &SessionTransaction{Store: scoped, Session: sess, tx: tx}, nil
+}
+
+func (tx *SessionTransaction) Commit(ctx context.Context) error {
+	return tx.tx.Commit(ctx)
+}
+
+func (tx *SessionTransaction) Rollback(ctx context.Context) error {
+	return tx.tx.Rollback(ctx)
 }
 
 // New connects to postgres and returns a Store.
@@ -31,17 +69,17 @@ func New(ctx context.Context, dsn string) (*Store, error) {
 	if err := pool.Ping(ctx); err != nil {
 		return nil, fmt.Errorf("ping: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, root: pool}, nil
 }
 
 // Close releases the pool.
 func (s *Store) Close() {
-	s.pool.Close()
+	s.root.Close()
 }
 
 // Ping verifies the database connection is still alive.
 func (s *Store) Ping(ctx context.Context) error {
-	return s.pool.Ping(ctx)
+	return s.root.Ping(ctx)
 }
 
 // Migrate runs the schema migrations. Safe to call on every startup.

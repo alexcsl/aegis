@@ -9,6 +9,22 @@ jobs:
   go:
     name: go
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: aegis_test
+          POSTGRES_USER: aegis_test
+          POSTGRES_PASSWORD: synthetic-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aegis_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AEGIS_TEST_DATABASE_URL: postgres://aegis_test:synthetic-ci-password@localhost:5432/aegis_test?sslmode=disable
     defaults:
       run:
         working-directory: core

@@ -183,7 +183,9 @@ curl -X POST localhost:8080/v1/decisions/<id>/resolve \
   -d '{"action":"approve"}'   # or "reject"
 ```
 
-set `AEGIS_ADMIN_KEY` so agents can't approve their own deferred calls. DEFER is not supported over the mcp proxy (it fails closed there).
+set `AEGIS_ADMIN_KEY` to a nonempty value different from `AEGIS_API_KEY`. Without a separate key, approval, pending-decision listing, and metrics endpoints return HTTP 503. Ordinary interception and agent polling remain available. DEFER is not supported over the mcp proxy (it fails closed there).
+
+session evaluation, counters, and call history commit in one postgres transaction before the API returns a decision or the mcp proxy forwards a call. Concurrent requests for the same session serialize across instances sharing the database. If policy state cannot be read or saved, the call fails closed. An mcp call counts as an attempt before forwarding, including when the upstream later fails.
 
 ---
 
@@ -269,7 +271,13 @@ go run ./cmd/aegis serve
 
 # tests
 go test -race -count=1 ./...
+
+# include database regressions against an isolated test database
+AEGIS_TEST_DATABASE_URL=postgres://aegis:test-password@localhost:5432/aegis_test?sslmode=disable \
+go test -race -count=1 ./...
 ```
+
+database regressions create and remove unique schemas. The test role needs permission to create schemas and view its own sessions in `pg_stat_activity`. Without `AEGIS_TEST_DATABASE_URL`, database regressions are skipped. On Windows without a supported C compiler, use `CGO_ENABLED=0 go test -count=1 ./...`; this does not run the race detector.
 
 the go binary is a single static file (~8MB). the docker image is built on scratch.
 

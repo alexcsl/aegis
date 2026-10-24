@@ -81,11 +81,13 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	sess, err := s.store.GetOrCreateSession(ctx, req.SessionID, req.AgentID, req.Context)
+	tx, err := s.store.BeginSession(ctx, req.SessionID, req.AgentID, req.Context)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "session error")
 		return
 	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	sess := tx.Session
 	// Reject cross-agent session access to prevent session poisoning.
 	if sess.AgentID != req.AgentID {
 		writeError(w, http.StatusForbidden, "session belongs to a different agent")
@@ -93,13 +95,14 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// count calls via SQL so the rate signal is never capped by the history fetch limit
-	recentCount, err := s.store.CountRecentCalls(ctx, req.SessionID, time.Minute)
+	recentCount, err := tx.Store.CountRecentCalls(ctx, req.SessionID, time.Minute)
 	if err != nil {
 		slog.Error("count recent calls", "err", err)
-		// non-fatal: rate signal will be 0, which is the safe direction
+		writeError(w, http.StatusInternalServerError, "history error")
+		return
 	}
 
-	history, err := s.store.GetToolCallHistory(ctx, req.SessionID, 20)
+	history, err := tx.Store.GetToolCallHistory(ctx, req.SessionID, 20)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "history error")
 		return
@@ -134,10 +137,6 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	// detach from the request context so background writes survive after the
-	// handler returns (http/2 cancels r.Context() immediately on return)
-	bg := context.WithoutCancel(ctx)
-
 	resp := interceptResponse{
 		Decision:  dec.Action,
 		Reason:    dec.Reason,
@@ -156,7 +155,7 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 	// return its id) and optionally fire a webhook so a human is alerted.
 	if dec.Action == "DEFER" {
 		decisionID := uuid.New().String()
-		if err := s.store.CreatePendingDecision(ctx, store.PendingDecision{
+		if err := tx.Store.CreatePendingDecision(ctx, store.PendingDecision{
 			ID:        decisionID,
 			SessionID: req.SessionID,
 			AgentID:   req.AgentID,
@@ -169,50 +168,33 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp.DecisionID = decisionID
-		if dec.Notify != "" {
-			payload := webhookPayload{
-				Event:      "decision.deferred",
-				DecisionID: decisionID,
-				SessionID:  req.SessionID,
-				AgentID:    req.AgentID,
-				Tool:       req.Tool,
-				Reason:     dec.Reason,
-				Policy:     dec.Policy,
-			}
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				fireWebhook(ctx, dec.Notify, payload)
-			}()
-		}
 	}
 
 	sess.RiskScore = score.Total
 	sess.ToolCallCount++
 	sess.CostUSD += req.CostUSD
 	sess.TokenCount += req.TokenCount
-	go func() {
-		if err := s.store.UpdateSession(bg, sess); err != nil {
-			slog.Error("update session", "session", req.SessionID, "err", err)
-		}
-	}()
+	if err := tx.Store.UpdateSession(ctx, sess); err != nil {
+		slog.Error("update session", "session", req.SessionID, "err", err)
+		writeError(w, http.StatusInternalServerError, "could not record policy state")
+		return
+	}
 
 	// record the args that were (or would be) executed — MODIFY-rewritten when applicable
 	recordedArgs := sanitize(execArgs)
-	go func() {
-		if err := s.store.AppendToolCall(bg, req.SessionID, store.ToolCall{
-			Tool:      req.Tool,
-			Args:      recordedArgs,
-			Decision:  dec.Action,
-			Timestamp: time.Now(),
-			CostUSD:   req.CostUSD,
-		}); err != nil {
-			slog.Error("append tool call", "session", req.SessionID, "err", err)
-		}
-	}()
+	if err := tx.Store.AppendToolCall(ctx, req.SessionID, store.ToolCall{
+		Tool:      req.Tool,
+		Args:      recordedArgs,
+		Decision:  dec.Action,
+		Timestamp: time.Now(),
+		CostUSD:   req.CostUSD,
+	}); err != nil {
+		slog.Error("append tool call", "session", req.SessionID, "err", err)
+		writeError(w, http.StatusInternalServerError, "could not record policy state")
+		return
+	}
 
 	latency := time.Since(start).Milliseconds()
-	resp.LatencyMs = latency
 
 	trace := store.Trace{
 		TraceID:         uuid.New().String(),
@@ -227,11 +209,29 @@ func (s *Server) handleIntercept(w http.ResponseWriter, r *http.Request) {
 		LatencyMs:       latency,
 		CostUSD:         req.CostUSD,
 	}
-	go func() {
-		if err := s.store.InsertTrace(bg, trace); err != nil {
-			slog.Error("insert trace", "session", req.SessionID, "err", err)
+	if err := tx.Store.InsertTrace(ctx, trace); err != nil {
+		slog.Error("insert trace", "session", req.SessionID, "err", err)
+		writeError(w, http.StatusInternalServerError, "could not record trace")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Error("commit interception", "session", req.SessionID, "err", err)
+		writeError(w, http.StatusInternalServerError, "could not commit policy state")
+		return
+	}
+	if dec.Action == "DEFER" && dec.Notify != "" {
+		payload := webhookPayload{
+			Event: "decision.deferred", DecisionID: resp.DecisionID,
+			SessionID: req.SessionID, AgentID: req.AgentID, Tool: req.Tool,
+			Reason: dec.Reason, Policy: dec.Policy,
 		}
-	}()
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			fireWebhook(ctx, dec.Notify, payload)
+		}()
+	}
+	resp.LatencyMs = time.Since(start).Milliseconds()
 
 	writeJSON(w, http.StatusOK, resp)
 }
